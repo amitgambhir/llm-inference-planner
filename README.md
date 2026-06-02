@@ -36,8 +36,7 @@ Every team running an LLM in production eventually hits the same wall:
 > *"Our model is slow / expensive / unreliable under load. What knob do we turn?"*
 
 The vLLM and SGLang documentation list **dozens** of tuning flags — `max-num-seqs`,
-`enable-chunked-prefill`, `enable-prefix-caching`, `tensor-parallel-size`, KV cache
-fraction, swap space, and so on. Most public guidance is generic ("enable chunked
+`enable-chunked-prefill`, `enable-prefix-caching`, `tensor-parallel-size`, `kv-cache-fraction`, `swap-space`, and so on. Most public guidance is generic ("enable chunked
 prefill for long contexts") and doesn't account for the specific **GPU**, **model
 precision**, and **workload shape** in front of you.
 
@@ -45,8 +44,8 @@ The result: engineers either (a) cargo-cult a config from a blog post, (b) over-
 provision hardware to compensate, or (c) spend weeks running ad-hoc benchmarks
 with one-off scripts.
 
-This project answers the question that every ML platform engineer and Solutions
-Architect faces:
+This project answers the question that every ML platform engineer and solutions
+architect faces:
 
 > **"For *my* workload and *my* hardware, what vLLM configuration actually matters
 > — and how do I measure it?"**
