@@ -70,6 +70,7 @@ def load_deployment(tag, latency_dirs, quality_dir):
             "throughput_tokens_per_sec": m.get("throughput_tokens_per_sec"),
         },
         "quality": None,
+        "num_samples": None,
         "cost": {
             "per_million_tokens": None,
             "throughput_proxy_tokens_per_sec": m.get("throughput_tokens_per_sec"),
@@ -110,6 +111,7 @@ def load_deployment(tag, latency_dirs, quality_dir):
             "overall_score": qm.get("overall_score"),
             "metrics": {k: v for k, v in qm.items() if k != "overall_score"},
         }
+        profile["num_samples"] = qual_raw.get("meta", {}).get("num_samples")
         cost = qual_raw.get("cost", {})
         profile["cost"]["per_million_tokens"] = cost.get("per_million_tokens")
 
@@ -198,6 +200,7 @@ def compute_tradeoff(profiles, baseline_tag):
             "latency_improvement_pct": latency_imp,
             "quality_delta_pct": quality_delta,
             "cost_reduction_pct": cost_red,
+            "num_samples": p.get("num_samples"),
         })
 
     return rows
@@ -309,18 +312,19 @@ def render(recommendation, output_format="markdown"):
         lines.append("")
 
     lines.append("Tradeoff Table:")
-    header = "  {:<20} {:>10}   {:>7}   {:>7}   {:>8}   {}".format(
-        "Tag", "TTFT p50", "Tok/s", "Quality", "Cost/1M", "Status")
+    header = "  {:<20} {:>10}   {:>7}   {:>7}   {:>9}   {:>8}   {}".format(
+        "Tag", "TTFT p50", "Tok/s", "Quality", "Samples", "Cost/1M", "Status")
     lines.append(header)
 
     for r in rows:
         ttft = "{}ms".format(r["ttft_ms_p50"])
         toks = str(int(r["throughput_tokens_per_sec"])) if r.get("throughput_tokens_per_sec") is not None else "N/A"
         qual = "{:.3f}".format(r["overall_score"]) if r.get("overall_score") is not None else "N/A"
+        samp = str(r["num_samples"]) if r.get("num_samples") is not None else "N/A"
         cost = "${:.2f}".format(r["cost_per_million"]) if r.get("cost_per_million") is not None else "N/A"
         status = r.get("status", "")
-        lines.append("  {:<20} {:>10}   {:>7}   {:>7}   {:>8}   {}".format(
-            r["tag"], ttft, toks, qual, cost, status))
+        lines.append("  {:<20} {:>10}   {:>7}   {:>7}   {:>9}   {:>8}   {}".format(
+            r["tag"], ttft, toks, qual, samp, cost, status))
 
     return "\n".join(lines)
 

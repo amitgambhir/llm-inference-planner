@@ -55,7 +55,8 @@ def write_json(directory, filename, data):
 
 
 def make_profile(tag, ttft_p50=200, throughput=200, overall_score=0.90,
-                 cost_per_million=1.20, throughput_proxy=200, is_baseline=False):
+                 cost_per_million=1.20, throughput_proxy=200, is_baseline=False,
+                 num_samples=15):
     return {
         "tag": tag,
         "model": "llama-3.1-8b",
@@ -65,6 +66,7 @@ def make_profile(tag, ttft_p50=200, throughput=200, overall_score=0.90,
             "throughput_tokens_per_sec": throughput,
         },
         "quality": {"overall_score": overall_score, "metrics": {}} if overall_score is not None else None,
+        "num_samples": num_samples,
         "cost": {
             "per_million_tokens": cost_per_million,
             "throughput_proxy_tokens_per_sec": throughput_proxy,
@@ -298,21 +300,25 @@ class TestRender:
                 {"tag": "int4", "ttft_ms_p50": 80, "throughput_tokens_per_sec": 400,
                  "overall_score": 0.72, "cost_per_million": 0.50,
                  "latency_improvement_pct": 60.0, "quality_delta_pct": -18.0,
-                 "cost_reduction_pct": 58.3, "is_baseline": False, "status": "eliminated"},
+                 "cost_reduction_pct": 58.3, "num_samples": None,
+                 "is_baseline": False, "status": "eliminated"},
             ],
             "rows": [
                 {"tag": "base", "ttft_ms_p50": 200, "throughput_tokens_per_sec": 200,
                  "overall_score": 0.90, "cost_per_million": 1.20,
                  "latency_improvement_pct": None, "quality_delta_pct": None,
-                 "cost_reduction_pct": None, "is_baseline": True, "status": "baseline"},
+                 "cost_reduction_pct": None, "num_samples": 15,
+                 "is_baseline": True, "status": "baseline"},
                 {"tag": "fp8", "ttft_ms_p50": 115, "throughput_tokens_per_sec": 262,
                  "overall_score": 0.88, "cost_per_million": 0.80,
                  "latency_improvement_pct": 42.5, "quality_delta_pct": -2.0,
-                 "cost_reduction_pct": 33.3, "is_baseline": False, "status": "RECOMMENDED"},
+                 "cost_reduction_pct": 33.3, "num_samples": 15,
+                 "is_baseline": False, "status": "RECOMMENDED"},
                 {"tag": "int4", "ttft_ms_p50": 80, "throughput_tokens_per_sec": 400,
                  "overall_score": 0.72, "cost_per_million": 0.50,
                  "latency_improvement_pct": 60.0, "quality_delta_pct": -18.0,
-                 "cost_reduction_pct": 58.3, "is_baseline": False, "status": "eliminated"},
+                 "cost_reduction_pct": 58.3, "num_samples": None,
+                 "is_baseline": False, "status": "eliminated"},
             ],
             "quality_threshold": 0.10,
         }

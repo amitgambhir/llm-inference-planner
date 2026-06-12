@@ -315,6 +315,8 @@ it captures:
 }
 ```
 
+**Environment contract.** The `meta` block is the full environment contract for each run — it records GPU hardware (`gpu.name`, `gpu.memory_mb`), runtime and precision (`runtime`, `model`), serving config (`config.chunked_prefill`, `config.tensor_parallel_size`), and workload shape (`workload.isl_approx`, `workload.osl_max`, `workload.concurrency`). Results are only comparable across runs with the same or explicitly documented differences in these fields. No separate environment manifest is needed — the contract is embedded in every result file.
+
 **Design notes.**
 
 - All hot-path globals (`ENDPOINT`, `MODEL`, `TOKEN`, `USE_SHARED_PREFIX`) are
@@ -453,6 +455,32 @@ Loads latency results and quality sidecars for each tag, computes relative delta
 | `--dry-run` | Load all tags and print a summary, then exit |
 
 **Cost model.** Uses `--cost-per-million-tokens` from the quality sidecar when available on both profiles. Falls back to throughput ratio as a proxy. Shows "N/A" when neither is available.
+
+**Normalized profile schema.** `load_deployment` merges the latency JSON and quality sidecar into a single in-memory structure used by all downstream functions:
+
+```json
+{
+  "tag": "vllm_fp8",
+  "model": "llama-3.1-8b",
+  "latency": {
+    "ttft_ms_p50": 115,
+    "ttft_ms_p95": 133,
+    "throughput_tokens_per_sec": 262
+  },
+  "quality": {
+    "overall_score": 0.93,
+    "metrics": {"answer_relevancy": 0.94, "correctness": 0.92}
+  },
+  "num_samples": 15,
+  "cost": {
+    "per_million_tokens": 0.80,
+    "throughput_proxy_tokens_per_sec": 262
+  },
+  "_dataset": "datasets/rag.jsonl"
+}
+```
+
+`quality` and `num_samples` are `null` when no quality sidecar exists. `cost.per_million_tokens` is `null` when `--cost-per-million-tokens` was not supplied to `run_eval.py`.
 
 **Hard errors.** The advisor stops immediately (with a clear message) on:
 
