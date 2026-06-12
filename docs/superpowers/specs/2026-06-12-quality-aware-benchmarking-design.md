@@ -114,7 +114,7 @@ Optional RAGAS-extension fields (V2, no migration needed — evaluator detects v
 
 ### DeploymentProfile (in-memory contract)
 
-The shared language across the pipeline. Produced by `load_deployment()`, consumed by `compute_tradeoff()` and `recommend()`. Neither `quality` nor `cost` are required keys — their absence is handled gracefully.
+The shared language across the pipeline. Produced by `load_deployment()`, consumed by `compute_tradeoff()` and `recommend()`. Neither `quality` nor `cost` are required keys — their absence is handled gracefully. This is a **normalized in-memory shape**: `load_deployment()` flattens the existing nested result schema (e.g. `metrics.ttft_ms.p50` → `latency.ttft_ms_p50`) so all downstream functions work against a single consistent structure rather than raw JSON.
 
 ```json
 {
@@ -155,6 +155,8 @@ python evaluate/run_eval.py \
   --latency-result results/real/vllm_l4fp8_isl2k_c10.json \
   --dataset datasets/rag.jsonl \
   --evaluator deepeval \
+  --eval-model gpt-4o \
+  --eval-endpoint https://api.openai.com/v1 \
   --cost-per-million-tokens 0.80 \
   --output-dir results/quality
 ```
@@ -162,6 +164,8 @@ python evaluate/run_eval.py \
 `--latency-result` is explicit (not inferred from tag). This is the link between the two halves of the pipeline and must be unambiguous.
 
 `--evaluator` accepts `deepeval` (default) or `llm-judge`.
+
+`--eval-model` and `--eval-endpoint` specify the judge model DeepEval uses to score responses. These are required for the `deepeval` path and are distinct from the inference endpoint being benchmarked. `--eval-endpoint` defaults to `https://api.openai.com/v1`; authentication uses the `OPENAI_API_KEY` environment variable. For `llm-judge`, the same flags serve as the judge endpoint.
 
 `--cost-per-million-tokens` is optional. When omitted, the quality sidecar records `per_million_tokens: null` and the throughput proxy is used for cost comparison.
 
@@ -175,7 +179,7 @@ python evaluate/run_eval.py \
 4. Detect workload type from dataset rows. Activate DeepEval metrics per workload:
    - `chat`, `long_context`: `AnswerRelevancyMetric`, `GEval(criteria="correctness")`
    - `rag`: adds `FaithfulnessMetric`, `HallucinationMetric` when `contexts` field is present
-5. Run DeepEval evaluation. Aggregate per-metric scores. `overall_score` = mean of all active metrics.
+5. Run DeepEval evaluation. Normalize all metrics to higher-is-better before aggregating: metrics that are rates where lower is better (e.g. `hallucination_rate`) are converted via `score = 1 - rate`. `overall_score` = mean of all normalized active metric scores.
 6. Read `throughput_tokens_per_sec` from the latency result file as throughput proxy.
 7. Write quality sidecar JSON. Tag name derived from the latency result filename.
 
@@ -277,7 +281,7 @@ Tradeoff Table:
 |---|---|
 | Tag has no latency result | Hard error, stop |
 | Tag has no quality sidecar | Warn, include in table with quality "N/A", exclude from quality-gated ranking |
-| `latency_tag` in quality sidecar doesn't match loaded latency tag | Warn with both values, continue |
+| `latency_tag` in quality sidecar doesn't match loaded latency tag | Hard error — a stale sidecar can silently corrupt a recommendation |
 | `model` differs between latency and quality files | Hard error |
 | `dataset` differs across profiles being compared | Hard error ("comparing quality scores from different datasets is invalid") |
 | `model` differs across profiles being compared | Hard error |
@@ -298,9 +302,11 @@ Tradeoff Table:
 
 ---
 
-## RAGAS Extension Path (V2)
+## RAGAS Extension Path (V2 only — no V1 behavior)
 
-No schema migration needed. Dataset rows gain optional `contexts` and `ground_truth` fields. The evaluator detects these at runtime via duck-typing. RAGAS metrics (faithfulness, answer relevancy, context recall, context precision) activate when both fields are present. The quality sidecar schema is unchanged — RAGAS metrics are additional keys under `metrics`.
+`ragas` is **not** added to `requirements.txt` and no RAGAS code is written in V1. This section describes the intended extension seam only.
+
+When implemented: no schema migration needed. Dataset rows gain optional `contexts` and `ground_truth` fields. A future `--evaluator ragas` flag activates RAGAS metrics (faithfulness, answer relevancy, context recall, context precision) when both fields are present. The quality sidecar schema is unchanged — RAGAS metrics appear as additional keys under `metrics`. The duck-typing detection described in the dataset schema section is the hook point for this extension.
 
 ---
 
