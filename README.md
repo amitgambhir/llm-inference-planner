@@ -1,9 +1,41 @@
 # llm-inference-bench
 
-A lightweight, platform-agnostic benchmarking harness for LLM inference endpoints.
-Works with **local vLLM, SGLang, Baseten, Red Hat OpenShift AI (RHOAI), AWS SageMaker,
-Azure ML, GCP Vertex** — anything that exposes an OpenAI-compatible `/v1/completions`
-interface.
+A controlled benchmarking and decision system for LLM inference deployments that evaluates performance, cost, and output quality across serving configurations and converts those signals into actionable deployment recommendations.
+
+It runs standardized workload benchmarks across configurable inference stacks (runtime, precision, batching, and model settings), evaluates response quality using dataset-driven or LLM-judge evaluators, and combines results with cost assumptions to compare deployment tradeoffs in a consistent environment.
+
+The system is designed to support engineering decision-making for production LLM systems — helping teams choose optimal serving configurations under real-world constraints such as latency SLOs, budget limits, and quality thresholds.
+
+---
+
+## Key Output
+
+For each workload and deployment configuration, the system produces:
+
+- Latency and throughput profiles under load
+- Cost-normalized efficiency estimates
+- Quality evaluation scores (optional but supported)
+- A ranked deployment recommendation based on configurable tradeoff policies
+
+---
+
+## Important Context
+
+This is a **comparative inference evaluation framework**, not a hardware microbenchmarking tool.
+
+Results are:
+
+- Valid within a defined and reproducible runtime environment
+- Intended for deployment decisioning, not absolute performance claims
+- Dependent on underlying infrastructure (GPU, runtime engine, and kernel optimizations)
+
+---
+
+## Why it exists
+
+Production LLM systems are not selected based on raw model capability — they are chosen based on **end-to-end deployment efficiency across cost, latency, and quality constraints**.
+
+This system operationalizes that decision space.
 
 ---
 
