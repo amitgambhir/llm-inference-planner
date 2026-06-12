@@ -6,3 +6,6 @@ results/real/*.json
 
 # Scaffolding prompt — kept locally, not published
 CLAUDE_CODE_PROMPT.md
+
+# Superpowers design and implementation docs
+docs/superpowers/
