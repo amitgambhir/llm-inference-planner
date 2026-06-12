@@ -13,19 +13,22 @@ interface.
 2. [What this tool does](#2-what-this-tool-does)
 3. [Quick start — no GPU needed](#3-quick-start--no-gpu-needed)
 4. [Quick start — against a running endpoint](#4-quick-start--against-a-running-endpoint)
-5. [Components](#5-components)
-   - 5.1 [`collect/run_bench.py` — the benchmark harness](#51-collectrun_benchpy--the-benchmark-harness)
-   - 5.2 [`analyze/report.py` — Markdown report generator](#52-analyzereportpy--markdown-report-generator)
-   - 5.3 [`playbook/advisor.py` — config recommendation engine](#53-playbookadvisorpy--config-recommendation-engine)
-   - 5.4 [`data/generate_synthetic.py` — reference dataset](#54-datagenerate_syntheticpy--reference-dataset)
-   - 5.5 [`workloads/*.yaml` — workload profiles](#55-workloadsyaml--workload-profiles)
-   - 5.6 [`examples/` — platform-specific guides](#56-examples--platform-specific-guides)
-   - 5.7 [`results/` — collected and reference data](#57-results--collected-and-reference-data)
-6. [Key findings from the validation run](#6-key-findings-from-the-validation-run)
-7. [Project structure](#7-project-structure)
-8. [Data lifecycle and gitignore](#8-data-lifecycle-and-gitignore)
-9. [Contributing](#9-contributing)
-10. [License](#10-license)
+5. [Quality-aware benchmarking](#5-quality-aware-benchmarking)
+6. [Components](#6-components)
+   - 6.1 [`collect/run_bench.py` — the benchmark harness](#61-collectrunbenchpy--the-benchmark-harness)
+   - 6.2 [`analyze/report.py` — Markdown report generator](#62-analyzereportpy--markdown-report-generator)
+   - 6.3 [`playbook/advisor.py` — config recommendation engine](#63-playbookadvisorpy--config-recommendation-engine)
+   - 6.4 [`evaluate/run_eval.py` — quality evaluator](#64-evaluaterunevalpy--quality-evaluator)
+   - 6.5 [`analyze/deployment_advisor.py` — deployment decision engine](#65-analyzedeploymentadvisorpy--deployment-decision-engine)
+   - 6.6 [`data/generate_synthetic.py` — reference dataset](#66-datageneratesyntheticpy--reference-dataset)
+   - 6.7 [`workloads/*.yaml` — workload profiles](#67-workloadsyaml--workload-profiles)
+   - 6.8 [`examples/` — platform-specific guides](#68-examples--platform-specific-guides)
+   - 6.9 [`results/` — collected and reference data](#69-results--collected-and-reference-data)
+7. [Key findings from the validation run](#7-key-findings-from-the-validation-run)
+8. [Project structure](#8-project-structure)
+9. [Data lifecycle and gitignore](#9-data-lifecycle-and-gitignore)
+10. [Contributing](#10-contributing)
+11. [License](#11-license)
 
 ---
 
@@ -72,6 +75,9 @@ It does so by combining three things:
 - **Recommends** a concrete vLLM configuration (`--max-num-seqs`,
   `--enable-chunked-prefill`, `--enable-prefix-caching`, replica count) for a
   given workload + hardware combination via a small, transparent rule engine.
+- **Evaluates quality** against real eval prompts (50–500 samples) and produces a
+  quality sidecar JSON linked to the latency result. Then **recommends** the best
+  deployment balancing latency, cost, and quality — not just the fastest one.
 - **Stays platform-agnostic.** The core harness has no notion of "vLLM" or
   "Baseten" or "RHOAI" — it only knows OpenAI-compatible streaming. Platform
   specifics live under `examples/`.
@@ -126,12 +132,91 @@ inference), add `--token $API_KEY`. The benchmark adds a `Bearer` header only
 when `--token` is provided, so it works with both authenticated and open endpoints
 from the same script.
 
-See the [platform guides](#56-examples--platform-specific-guides) for full
+See the [platform guides](#68-examples--platform-specific-guides) for full
 walkthroughs against local vLLM, Baseten, and RHOAI.
 
 ---
 
-## 5. Components
+## 5. Quality-aware benchmarking
+
+Most inference benchmarks answer: *"Which configuration is fastest?"* This tool goes further:
+
+> **"Is the faster deployment actually good enough — in quality and cost?"**
+
+### Pipeline
+
+```text
+collect/run_bench.py      →  results/real/<tag>.json         (latency)
+evaluate/run_eval.py      →  results/quality/<tag>.json      (quality sidecar)
+analyze/deployment_advisor.py --tags t1 t2 t3               (recommendation)
+```
+
+The evaluation pipeline is **offline and separate** from the load test — it sends 50–500 representative prompts at low concurrency (5) so it does not warm the KV cache or interfere with a parallel load test.
+
+### Example
+
+```bash
+# 1. Run the quality evaluator against a deployment
+python evaluate/run_eval.py \
+  --endpoint http://localhost:8000/v1/completions \
+  --model llama-3.1-8b \
+  --latency-result results/real/vllm_l4fp8_isl2k_c10.json \
+  --dataset datasets/rag.jsonl \
+  --evaluator deepeval \
+  --eval-model gpt-4o \
+  --cost-per-million-tokens 0.80
+
+# 2. Compare deployments
+python analyze/deployment_advisor.py \
+  --tags vllm_a100fp16 vllm_l4fp8 vllm_l4int4 \
+  --baseline vllm_a100fp16 \
+  --quality-threshold 0.10
+```
+
+**Output:**
+
+```text
+=== Deployment Recommendation ===
+
+Recommended: vllm_l4fp8
+
+  Latency Improvement:  42.5%  (200ms → 115ms TTFT p50)
+  Cost Reduction:       33.3%  ($1.20 → $0.80 per 1M tokens)
+  Quality Delta:        -2.0%  (0.900 → 0.880)
+
+Eliminated: vllm_l4int4 — quality drop 18.0% exceeds threshold (10.0%)
+
+Tradeoff Table:
+  Tag                    TTFT p50   Tok/s    Quality   Cost/1M    Status
+  vllm_a100fp16           200ms      200    0.900      $1.20     baseline
+  vllm_l4fp8              115ms      262    0.880      $0.80     RECOMMENDED
+  vllm_l4int4              80ms      400    0.720      $0.50     eliminated
+```
+
+### Quality sources
+
+| Evaluator | When to use | Requirement |
+| --- | --- | --- |
+| `deepeval` (default) | Automated CI runs, reproducible scoring | `pip install deepeval` + OpenAI API key for judge model |
+| `llm-judge` | Any OpenAI-compatible judge endpoint | Same flags, no extra install |
+
+### Datasets
+
+Three built-in eval datasets under `datasets/`:
+
+| File | Workload | Prompts |
+| --- | --- | --- |
+| `datasets/chat.jsonl` | Customer support / enterprise chat | 15 |
+| `datasets/rag.jsonl` | RAG over claim documents | 15 |
+| `datasets/long_context.jsonl` | Long-document analysis and summarization | 15 |
+
+Each row: `{"schema_version": 1, "id": "...", "workload": "...", "prompt": "...", "expected": "..."}`.
+
+Use `--dry-run` on either script to validate inputs without hitting endpoints or the judge model.
+
+---
+
+## 6. Components
 
 The repo has five executable pieces (`run_bench`, `report`, `advisor`,
 `generate_synthetic`, plus the example assets). They are intentionally
@@ -139,7 +224,7 @@ The repo has five executable pieces (`run_bench`, `report`, `advisor`,
 the GPU is only needed for data collection; analysis and recommendations run
 anywhere.
 
-### 5.1 `collect/run_bench.py` — the benchmark harness
+### 6.1 `collect/run_bench.py` — the benchmark harness
 
 The only component that needs a network connection to a model.
 
@@ -212,7 +297,7 @@ it captures:
   review) simulate realistic enterprise workloads. Synthetic lorem ipsum
   changes prefill cost characteristics and produces misleading numbers.
 
-### 5.2 `analyze/report.py` — Markdown report generator
+### 6.2 `analyze/report.py` — Markdown report generator
 
 Reads every JSON file under `results/real/` and `results/synthetic/` and emits
 a single Markdown report. **Real measurements override synthetic rows that
@@ -242,7 +327,7 @@ reference quietly steps out of the way.
 
 **Stdlib only.** No dependencies. Runs anywhere Python 3.9+ runs.
 
-### 5.3 `playbook/advisor.py` — config recommendation engine
+### 6.3 `playbook/advisor.py` — config recommendation engine
 
 A small CLI rule engine that converts a workload description into a concrete
 vLLM configuration. **Every rule is grounded in real benchmark data**, with
@@ -284,7 +369,60 @@ the source cited inline in the rationale string.
 - `gpu=l4` + `precision=fp16` — VRAM pressure for 8B+ models.
 - `scale=realtime` + `isl>4096` — prefill alone may exceed the latency budget.
 
-### 5.4 `data/generate_synthetic.py` — reference dataset
+### 6.4 `evaluate/run_eval.py` — quality evaluator
+
+Sends eval dataset prompts to an inference endpoint at low concurrency (5 workers), scores responses with DeepEval or an LLM judge, and writes a quality sidecar JSON to `results/quality/<tag>.json`.
+
+**Arguments.**
+
+| Flag | Purpose |
+| --- | --- |
+| `--endpoint` | Inference endpoint to evaluate (required) |
+| `--model` | Model name as served (required) |
+| `--latency-result` | Path to the latency JSON this eval is paired with (required — sets the `latency_tag` backlink) |
+| `--dataset` | Path to a JSONL eval dataset (required) |
+| `--evaluator` | `deepeval` (default) or `llm-judge` |
+| `--eval-model` | Judge model for DeepEval or LLM-judge (default: `gpt-4o`) |
+| `--eval-endpoint` | Judge endpoint (default: `https://api.openai.com/v1`) |
+| `--token` | Bearer token for the inference endpoint |
+| `--eval-token` | Bearer token for the judge endpoint |
+| `--cost-per-million-tokens` | Optional. Recorded in the quality sidecar for cost comparison |
+| `--output-dir` | Where to write the quality sidecar (default: `results/quality`) |
+| `--dry-run` | Validate inputs and print what would run, then exit |
+
+**DeepEval metrics by workload.**
+
+| Workload | Metrics |
+| --- | --- |
+| `chat`, `long_context` | `AnswerRelevancyMetric`, `GEval(correctness)` |
+| `rag` (no `contexts` field) | same as above |
+| `rag` (with `contexts` field) | above + `FaithfulnessMetric`, `HallucinationMetric` |
+
+**Requires:** `pip install deepeval` (already in `requirements.txt`). Authentication for the judge model uses the `OPENAI_API_KEY` environment variable.
+
+### 6.5 `analyze/deployment_advisor.py` — deployment decision engine
+
+Answers: **"Given my quality requirements and cost constraints, which deployment should I choose?"**
+
+Loads latency results and quality sidecars for each tag, computes relative deltas vs a baseline, eliminates deployments that fall below the quality threshold, and recommends the best surviving option by latency improvement.
+
+**Arguments.**
+
+| Flag | Purpose |
+| --- | --- |
+| `--tags` | Deployment tags to compare (space-separated, required) |
+| `--baseline` | Tag to treat as the reference (required) |
+| `--quality-threshold` | Max acceptable quality drop vs baseline (default: `0.10` = 10%) |
+| `--output` | `markdown` (default, terminal-friendly) or `json` |
+| `--latency-dirs` | Override latency search dirs (default: `results/synthetic results/real`) |
+| `--quality-dir` | Override quality sidecar dir (default: `results/quality`) |
+| `--dry-run` | Load all tags and print a summary, then exit |
+
+**Cost model.** Uses `--cost-per-million-tokens` from the quality sidecar when available on both profiles. Falls back to throughput ratio as a proxy. Shows "N/A" when neither is available.
+
+**Relation to `playbook/advisor.py`.** The playbook advisor answers "what vLLM flags should I use?" The deployment advisor answers "which quantization / precision / configuration should I deploy?" Two advisors, two levels of the stack — neither replaces the other.
+
+### 6.6 `data/generate_synthetic.py` — reference dataset
 
 Generates ~23 JSON files under `results/synthetic/` containing scenarios that
 are too expensive or impractical to measure on every workstation: A100/H100
@@ -308,7 +446,7 @@ When real data overrides a synthetic row, the report quietly upgrades. This
 gives newcomers a complete-looking dataset on day 1 and a path to displace
 synthetics with real measurements over time.
 
-### 5.5 `workloads/*.yaml` — workload profiles
+### 6.7 `workloads/*.yaml` — workload profiles
 
 Three YAML workload profiles you can pass directly to `advisor.py` (or use as
 config inputs in your own tooling):
@@ -322,7 +460,7 @@ config inputs in your own tooling):
 Each file also records the baseline L4/FP8 measurement for that profile so
 you can sanity-check your own numbers against the validation run.
 
-### 5.6 `examples/` — platform-specific guides
+### 6.8 `examples/` — platform-specific guides
 
 The benchmark harness is generic; deployment platforms aren't. These guides
 get you from "I have an account" to "I have a benchmark JSON" on each
@@ -344,12 +482,12 @@ platform:
   - [`examples/rhoai/serving_runtime.yaml`](examples/rhoai/serving_runtime.yaml) — the RHAIIS `ServingRuntime`
   - [`examples/rhoai/isvc.yaml`](examples/rhoai/isvc.yaml) — the `InferenceService` deploying Llama 3.1 8B FP8 from an OCI registry
 
-### 5.7 `results/` — collected and reference data
+### 6.9 `results/` — collected and reference data
 
 Two siblings:
 
 - `results/real/` — populated by `run_bench.py`. Gitignored by default (see
-  [section 8](#8-data-lifecycle-and-gitignore)). Each file represents one
+  [section 9](#9-data-lifecycle-and-gitignore)). Each file represents one
   benchmark run.
 - `results/synthetic/` — populated by `generate_synthetic.py`. Committed to
   the repo so a fresh clone has working data immediately.
@@ -359,7 +497,7 @@ real measurement wins.
 
 ---
 
-## 6. Key findings from the validation run
+## 7. Key findings from the validation run
 
 Validated on **NVIDIA L4 + Llama 3.1 8B FP8** via Red Hat OpenShift AI. See
 [BENCHMARK_FINDINGS.md](BENCHMARK_FINDINGS.md) for the full study including
@@ -379,9 +517,9 @@ infrastructure setup, experiment design, and per-run numbers.
 
 ---
 
-## 7. Project structure
+## 8. Project structure
 
-```
+```text
 llm-inference-bench/
 ├── README.md                       # this file
 ├── BENCHMARK_FINDINGS.md           # full L4/FP8 validation study
@@ -391,8 +529,17 @@ llm-inference-bench/
 ├── collect/
 │   └── run_bench.py                # async benchmark; OpenAI-compatible; streaming TTFT
 │
+├── evaluate/
+│   └── run_eval.py                 # quality evaluator; DeepEval + LLM-judge; low concurrency
+│
+├── datasets/
+│   ├── chat.jsonl                  # 15 enterprise chat eval prompts
+│   ├── rag.jsonl                   # 15 RAG eval prompts (claim documents)
+│   └── long_context.jsonl          # 15 long-document analysis prompts
+│
 ├── analyze/
-│   └── report.py                   # JSON → Markdown report (stdlib only)
+│   ├── report.py                   # JSON → Markdown report (stdlib only)
+│   └── deployment_advisor.py       # latency + quality + cost → deployment recommendation
 │
 ├── playbook/
 │   └── advisor.py                  # workload + hardware → vLLM config (stdlib only)
@@ -408,7 +555,9 @@ llm-inference-bench/
 ├── results/
 │   ├── real/                       # populated by run_bench.py (gitignored)
 │   │   └── .gitkeep
-│   └── synthetic/                  # populated by generate_synthetic.py (committed)
+│   ├── synthetic/                  # populated by generate_synthetic.py (committed)
+│   └── quality/                    # populated by run_eval.py (quality sidecars)
+│       └── .gitkeep
 │
 └── examples/
     ├── local-vllm/
@@ -423,7 +572,7 @@ llm-inference-bench/
 
 ---
 
-## 8. Data lifecycle and gitignore
+## 9. Data lifecycle and gitignore
 
 `results/real/*.json` is **gitignored by default** to keep the repo small and
 avoid leaking sensitive endpoint identifiers in result metadata. The
@@ -439,7 +588,7 @@ out of the box.
 
 ---
 
-## 9. Contributing
+## 10. Contributing
 
 PRs welcome. Two principles:
 
@@ -451,12 +600,16 @@ PRs welcome. Two principles:
    Anything specific to a deployment platform (RHOAI, Baseten, SageMaker,
    Vertex, etc.) goes under `examples/`. The core tool must never grow a
    conditional on "which cloud are we on".
+3. **Quality data is not optional for production decisions.** When comparing
+   deployments, run `evaluate/run_eval.py` before `deployment_advisor.py`. A
+   recommendation made without quality data ranks by latency only — acceptable
+   for a quick filter, not for a ship decision.
 
 Python 3.9+ compatible. `collect/run_bench.py` uses `aiohttp`; everything
 else is stdlib-only.
 
 ---
 
-## 10. License
+## 11. License
 
 Apache 2.0.
