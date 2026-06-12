@@ -1,1 +1,2 @@
 aiohttp>=3.8.0
+deepeval>=0.21.0
