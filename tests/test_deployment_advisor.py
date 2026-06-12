@@ -1,6 +1,6 @@
 import json
 import pytest
-from analyze.deployment_advisor import load_deployment, compute_tradeoff
+from analyze.deployment_advisor import load_deployment, compute_tradeoff, recommend, render
 
 
 def make_latency_json(tag, ttft_p50=115, ttft_p95=133, throughput=262, model="llama-3.1-8b"):
@@ -210,3 +210,118 @@ class TestComputeTradeoff:
         profiles = [make_profile("fp8")]
         with pytest.raises(SystemExit):
             compute_tradeoff(profiles, "nonexistent")
+
+
+class TestRecommend:
+    def test_recommends_best_latency_among_candidates(self):
+        rows = [
+            {"tag": "base", "is_baseline": True, "ttft_ms_p50": 200, "throughput_tokens_per_sec": 200,
+             "overall_score": 0.90, "cost_per_million": 1.20,
+             "latency_improvement_pct": None, "quality_delta_pct": None, "cost_reduction_pct": None},
+            {"tag": "fp8", "is_baseline": False, "ttft_ms_p50": 115, "throughput_tokens_per_sec": 262,
+             "overall_score": 0.88, "cost_per_million": 0.80,
+             "latency_improvement_pct": 42.5, "quality_delta_pct": -2.0, "cost_reduction_pct": 33.3},
+            {"tag": "int4", "is_baseline": False, "ttft_ms_p50": 80, "throughput_tokens_per_sec": 400,
+             "overall_score": 0.72, "cost_per_million": 0.50,
+             "latency_improvement_pct": 60.0, "quality_delta_pct": -18.0, "cost_reduction_pct": 58.3},
+        ]
+        rec = recommend(rows, quality_threshold=0.10)
+        assert rec["recommended_tag"] == "fp8"
+        assert rec["baseline_tag"] == "base"
+        assert len(rec["eliminated"]) == 1
+        assert rec["eliminated"][0]["tag"] == "int4"
+
+    def test_baseline_recommended_when_all_eliminated(self):
+        rows = [
+            {"tag": "base", "is_baseline": True, "ttft_ms_p50": 200, "throughput_tokens_per_sec": 200,
+             "overall_score": 0.90, "cost_per_million": 1.20,
+             "latency_improvement_pct": None, "quality_delta_pct": None, "cost_reduction_pct": None},
+            {"tag": "bad", "is_baseline": False, "ttft_ms_p50": 100, "throughput_tokens_per_sec": 300,
+             "overall_score": 0.60, "cost_per_million": 0.50,
+             "latency_improvement_pct": 50.0, "quality_delta_pct": -30.0, "cost_reduction_pct": 58.3},
+        ]
+        rec = recommend(rows, quality_threshold=0.10)
+        assert rec["recommended_tag"] == "base"
+        assert "threshold" in rec["warning"].lower() or "no alternative" in rec["warning"].lower()
+
+    def test_no_quality_data_warning_set(self):
+        rows = [
+            {"tag": "base", "is_baseline": True, "ttft_ms_p50": 200, "throughput_tokens_per_sec": 200,
+             "overall_score": None, "cost_per_million": 1.20,
+             "latency_improvement_pct": None, "quality_delta_pct": None, "cost_reduction_pct": None},
+            {"tag": "fp8", "is_baseline": False, "ttft_ms_p50": 100, "throughput_tokens_per_sec": 300,
+             "overall_score": None, "cost_per_million": 0.80,
+             "latency_improvement_pct": 50.0, "quality_delta_pct": None, "cost_reduction_pct": 33.3},
+        ]
+        rec = recommend(rows, quality_threshold=0.10)
+        assert rec["warning"] is not None
+        assert "quality" in rec["warning"].lower()
+        assert rec["recommended_tag"] == "fp8"
+
+    def test_status_field_added_to_all_rows(self):
+        rows = [
+            {"tag": "base", "is_baseline": True, "ttft_ms_p50": 200, "throughput_tokens_per_sec": 200,
+             "overall_score": 0.90, "cost_per_million": 1.20,
+             "latency_improvement_pct": None, "quality_delta_pct": None, "cost_reduction_pct": None},
+            {"tag": "fp8", "is_baseline": False, "ttft_ms_p50": 115, "throughput_tokens_per_sec": 262,
+             "overall_score": 0.88, "cost_per_million": 0.80,
+             "latency_improvement_pct": 42.5, "quality_delta_pct": -2.0, "cost_reduction_pct": 33.3},
+        ]
+        rec = recommend(rows, quality_threshold=0.10)
+        statuses = {r["tag"]: r["status"] for r in rec["rows"]}
+        assert statuses["base"] == "baseline"
+        assert statuses["fp8"] in ("candidate", "RECOMMENDED")
+
+
+class TestRender:
+    def _make_recommendation(self):
+        return {
+            "recommended_tag": "fp8",
+            "baseline_tag": "base",
+            "warning": None,
+            "eliminated": [
+                {"tag": "int4", "ttft_ms_p50": 80, "throughput_tokens_per_sec": 400,
+                 "overall_score": 0.72, "cost_per_million": 0.50,
+                 "latency_improvement_pct": 60.0, "quality_delta_pct": -18.0,
+                 "cost_reduction_pct": 58.3, "is_baseline": False, "status": "eliminated"},
+            ],
+            "rows": [
+                {"tag": "base", "ttft_ms_p50": 200, "throughput_tokens_per_sec": 200,
+                 "overall_score": 0.90, "cost_per_million": 1.20,
+                 "latency_improvement_pct": None, "quality_delta_pct": None,
+                 "cost_reduction_pct": None, "is_baseline": True, "status": "baseline"},
+                {"tag": "fp8", "ttft_ms_p50": 115, "throughput_tokens_per_sec": 262,
+                 "overall_score": 0.88, "cost_per_million": 0.80,
+                 "latency_improvement_pct": 42.5, "quality_delta_pct": -2.0,
+                 "cost_reduction_pct": 33.3, "is_baseline": False, "status": "RECOMMENDED"},
+                {"tag": "int4", "ttft_ms_p50": 80, "throughput_tokens_per_sec": 400,
+                 "overall_score": 0.72, "cost_per_million": 0.50,
+                 "latency_improvement_pct": 60.0, "quality_delta_pct": -18.0,
+                 "cost_reduction_pct": 58.3, "is_baseline": False, "status": "eliminated"},
+            ],
+            "quality_threshold": 0.10,
+        }
+
+    def test_markdown_contains_recommended_tag(self):
+        rec = self._make_recommendation()
+        output = render(rec, "markdown")
+        assert "Recommended: fp8" in output
+
+    def test_markdown_contains_eliminated_section(self):
+        rec = self._make_recommendation()
+        output = render(rec, "markdown")
+        assert "Eliminated" in output
+        assert "int4" in output
+
+    def test_markdown_contains_tradeoff_table(self):
+        rec = self._make_recommendation()
+        output = render(rec, "markdown")
+        assert "Tradeoff Table" in output
+        assert "baseline" in output
+        assert "RECOMMENDED" in output
+
+    def test_json_output_is_valid_json(self):
+        rec = self._make_recommendation()
+        output = render(rec, "json")
+        parsed = json.loads(output)
+        assert parsed["recommended_tag"] == "fp8"

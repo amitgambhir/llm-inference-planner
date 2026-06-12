@@ -181,3 +181,125 @@ def compute_tradeoff(profiles, baseline_tag):
         })
 
     return rows
+
+
+def recommend(rows, quality_threshold=0.10):
+    """
+    Filter and rank profiles vs baseline. Returns a Recommendation dict.
+    Eliminates profiles with quality_delta_pct < -threshold*100.
+    Falls back to baseline if no candidate survives.
+    """
+    baseline_row = next(r for r in rows if r["is_baseline"])
+    baseline_tag = baseline_row["tag"]
+
+    all_quality_none = all(r["quality_delta_pct"] is None for r in rows if not r["is_baseline"])
+
+    warning = None
+    if all_quality_none:
+        warning = "No quality data available — ranked by latency only"
+
+    augmented = []
+    eliminated = []
+    for r in rows:
+        row = dict(r)
+        if r["is_baseline"]:
+            row["status"] = "baseline"
+        elif (
+            r["quality_delta_pct"] is not None
+            and r["quality_delta_pct"] < -quality_threshold * 100
+        ):
+            row["status"] = "eliminated"
+            eliminated.append(row)
+        else:
+            row["status"] = "candidate"
+        augmented.append(row)
+
+    candidates = [r for r in augmented if r["status"] == "candidate"]
+    candidates.sort(key=lambda r: (r["latency_improvement_pct"] or 0), reverse=True)
+
+    if candidates:
+        recommended_tag = candidates[0]["tag"]
+        for r in augmented:
+            if r["tag"] == recommended_tag:
+                r["status"] = "RECOMMENDED"
+    else:
+        recommended_tag = baseline_tag
+        if warning is None:
+            warning = "No alternative met the quality threshold — baseline recommended"
+
+    return {
+        "recommended_tag": recommended_tag,
+        "baseline_tag": baseline_tag,
+        "rows": augmented,
+        "eliminated": eliminated,
+        "warning": warning,
+        "quality_threshold": quality_threshold,
+    }
+
+
+def render(recommendation, output_format="markdown"):
+    """Render recommendation as a markdown terminal card or raw JSON."""
+    if output_format == "json":
+        return json.dumps(recommendation, indent=2)
+
+    rec_tag = recommendation["recommended_tag"]
+    baseline_tag = recommendation["baseline_tag"]
+    rows = recommendation["rows"]
+    eliminated = recommendation["eliminated"]
+    warning = recommendation.get("warning")
+    threshold = recommendation.get("quality_threshold", 0.10)
+
+    rec_row = next((r for r in rows if r["tag"] == rec_tag), None)
+    base_row = next((r for r in rows if r["tag"] == baseline_tag), None)
+
+    lines = ["=== Deployment Recommendation ===", ""]
+    lines.append("Recommended: {}".format(rec_tag))
+    lines.append("")
+
+    if rec_row and rec_row["tag"] != baseline_tag:
+        lat = rec_row.get("latency_improvement_pct")
+        cost = rec_row.get("cost_reduction_pct")
+        qual = rec_row.get("quality_delta_pct")
+        base_ttft = base_row["ttft_ms_p50"] if base_row else "N/A"
+        rec_ttft = rec_row["ttft_ms_p50"]
+        base_cost = "${:.2f}".format(base_row["cost_per_million"]) if base_row and base_row.get("cost_per_million") is not None else "N/A"
+        rec_cost = "${:.2f}".format(rec_row["cost_per_million"]) if rec_row.get("cost_per_million") is not None else "N/A"
+        base_score = "{:.3f}".format(base_row["overall_score"]) if base_row and base_row.get("overall_score") is not None else "N/A"
+        rec_score = "{:.3f}".format(rec_row["overall_score"]) if rec_row.get("overall_score") is not None else "N/A"
+
+        lat_str = "{:.1f}%  ({}ms → {}ms TTFT p50)".format(lat, base_ttft, rec_ttft) if lat is not None else "N/A"
+        cost_str = "{:.1f}%  ({} → {} per 1M tokens)".format(cost, base_cost, rec_cost) if cost is not None else "N/A"
+        qual_sign = "+" if qual is not None and qual >= 0 else ""
+        qual_str = "{}{:.1f}%  ({} → {})".format(qual_sign, qual, base_score, rec_score) if qual is not None else "N/A"
+
+        lines.append("  Latency Improvement:  {}".format(lat_str))
+        lines.append("  Cost Reduction:       {}".format(cost_str))
+        lines.append("  Quality Delta:        {}".format(qual_str))
+        lines.append("")
+
+    if eliminated:
+        for e in eliminated:
+            qdelta = abs(e["quality_delta_pct"]) if e.get("quality_delta_pct") is not None else "N/A"
+            lines.append("Eliminated: {} — quality drop {:.1f}% exceeds threshold ({:.1f}%)".format(
+                e["tag"], qdelta, threshold * 100))
+        lines.append("")
+
+    if warning:
+        lines.append("Warning: {}".format(warning))
+        lines.append("")
+
+    lines.append("Tradeoff Table:")
+    header = "  {:<20} {:>10}   {:>7}   {:>7}   {:>8}   {}".format(
+        "Tag", "TTFT p50", "Tok/s", "Quality", "Cost/1M", "Status")
+    lines.append(header)
+
+    for r in rows:
+        ttft = "{}ms".format(r["ttft_ms_p50"])
+        toks = str(int(r["throughput_tokens_per_sec"])) if r.get("throughput_tokens_per_sec") is not None else "N/A"
+        qual = "{:.3f}".format(r["overall_score"]) if r.get("overall_score") is not None else "N/A"
+        cost = "${:.2f}".format(r["cost_per_million"]) if r.get("cost_per_million") is not None else "N/A"
+        status = r.get("status", "")
+        lines.append("  {:<20} {:>10}   {:>7}   {:>7}   {:>8}   {}".format(
+            r["tag"], ttft, toks, qual, cost, status))
+
+    return "\n".join(lines)
