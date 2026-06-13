@@ -349,6 +349,26 @@ def test_prefill_ceiling_positive():
     assert tps > 0
 
 
+def test_prefill_ceiling_bw_bound_at_short_isl():
+    """Below the ridge point, bandwidth ceiling binds and throughput is lower than compute ceiling."""
+    # H100 ridge ≈ 989e12 * 0.40 / (3350e9 * 0.70) ≈ 169 tokens for llama-3.1-70b bf16.
+    model = get_model("llama-3.1-70b")
+    gpu = get_gpu("h100_sxm")
+    tps_short = prefill_ceiling(gpu, model, "bf16", 50, 0.40, bw_eff=0.70)   # ISL=50: bw-bound
+    tps_long  = prefill_ceiling(gpu, model, "bf16", 512, 0.40, bw_eff=0.70)  # ISL=512: compute-bound
+    assert tps_short < tps_long, "ISL below ridge should be bandwidth-bound → lower throughput"
+
+
+def test_prefill_ceiling_bw_bound_scales_with_isl():
+    """In the bandwidth-bound regime, throughput grows linearly with ISL (more tokens per weight load)."""
+    model = get_model("llama-3.1-70b")
+    gpu = get_gpu("h100_sxm")
+    tps_50  = prefill_ceiling(gpu, model, "bf16", 50,  0.40, bw_eff=0.70)
+    tps_100 = prefill_ceiling(gpu, model, "bf16", 100, 0.40, bw_eff=0.70)
+    # Both are bw-bound (50 < 100 < 169 ridge); doubling ISL should roughly double throughput.
+    assert tps_100 > tps_50 * 1.8
+
+
 # ============================================================================
 # Unit tests — decode_ceiling
 # ============================================================================
@@ -508,10 +528,12 @@ def test_size_replicas_headroom_applied():
 
 
 def test_size_replicas_tp_scales_per_replica_capacity():
+    # prefill_tps_gpu / decode_tps_gpu are TP-group throughput (already include TP factor).
+    # At tp=4 the caller (plan → ceiling functions) provides 4× the throughput and
+    # 4× the KV slots — so each replica handles more load → fewer replicas needed.
     traffic = normalize_traffic(1_000_000, 1.0, 512, 128)
     sz_tp1 = size_replicas(traffic, 50_000.0, 50_000.0, 64, tp=1, traffic_class="batch", isl=512, osl=128)
-    sz_tp4 = size_replicas(traffic, 50_000.0, 50_000.0, 64, tp=4, traffic_class="batch", isl=512, osl=128)
-    # tp=4 means each replica is 4x more capable → fewer replicas
+    sz_tp4 = size_replicas(traffic, 200_000.0, 200_000.0, 256, tp=4, traffic_class="batch", isl=512, osl=128)
     assert sz_tp4["replicas"] <= sz_tp1["replicas"]
 
 

@@ -116,7 +116,13 @@ class CapacityEstimate:
     replicas_concurrency: int = 0
     mfu_used: float = 0.0
     bw_eff_used: float = 0.0
+    decode_bw_eff_used: float = 0.0   # after KV-ratio adjustment
     anchor_matched: bool = False
+    # Throughput-centric metrics
+    total_gpus: int = 0               # replicas × tp (true fleet size)
+    tpot_ms: float = 0.0              # decode inter-token latency per request at eff_batch
+    eff_batch_used: int = 0           # batch_efficiency × max_concurrent_seqs
+    kv_ratio: float = 0.0             # kv_bytes / weight_bytes at eff_batch (decode regime indicator)
 
 
 # ---------------------------------------------------------------------------
@@ -204,22 +210,37 @@ def prefill_ceiling(
     dtype: str,
     isl: int,
     mfu: float,
+    bw_eff: float = 0.70,
     tp: int = 1,
 ) -> float:
-    """Return prefill throughput in tokens/sec for the TP group at the given MFU.
+    """Return prefill throughput in tokens/sec for the TP group — min(compute, bandwidth).
 
     FLOPs per token = 2 * active_params (linear layers) +
                       2 * num_layers * isl * d_model (attention — grows with context).
-    The attention coefficient is approximate; full flash-attention is O(S^2 * d_head)
-    but projected through GQA the effective cost scales as shown here.
-    With TP=N the group has N × peak_flops available.
+
+    For most throughput workloads (ISL ≥ ~200 on H100) prefill is compute-bound and
+    the bandwidth floor does not bind.  It matters for short-prompt workloads (ISL < 170)
+    where a single request's tokens cannot amortise the full weight-read over enough
+    compute to saturate the tensor cores.
+
+    Ridge point (tokens): peak_flops * mfu / (bandwidth * bw_eff)
+      ≈ 989e12 * 0.40 / (3350e9 * 0.70) ≈ 169 tokens on H100 bf16
+
+    Both ceilings include the TP multiplier (TP group has N× compute and N× bandwidth).
     """
     flops_per_token = (
         2 * model.active_params
         + 2 * model.num_layers * isl * model.d_model
     )
-    achievable_flops = gpu.peak_flops.get(dtype) * 1e12 * mfu * tp
-    return achievable_flops / flops_per_token
+    # Compute-bound: FLOPs limited (TP group has tp × peak_flops)
+    compute_tps = gpu.peak_flops.get(dtype) * 1e12 * mfu * tp / flops_per_token
+
+    # Bandwidth-bound: weight-streaming limited when ISL < ridge point.
+    # Processing isl tokens loads weights once; throughput = isl / weight_load_time.
+    weight_bytes = model.active_params * DTYPE_BYTES.get(dtype, 2.0)
+    bw_tps = isl * gpu.hbm_bandwidth_gbps * 1e9 * bw_eff * tp / weight_bytes
+
+    return min(compute_tps, bw_tps)
 
 
 # ---------------------------------------------------------------------------
@@ -331,17 +352,19 @@ def size_replicas(
       base_replicas, binding_constraint, headroom_factor, replicas,
       replicas_low, replicas_high  (range widened separately by caller)
     """
-    per_replica_prefill = prefill_tps_gpu * tp
-    per_replica_decode = decode_tps_gpu * tp
+    # prefill_tps_gpu and decode_tps_gpu are TP-group throughput (from ceiling functions).
+    # A "replica" = one TP group.  Do NOT multiply by tp again.
+    per_replica_prefill = prefill_tps_gpu
+    per_replica_decode = decode_tps_gpu
 
     replicas_prefill = math.ceil(traffic.input_tps_peak / per_replica_prefill)
     replicas_decode = math.ceil(traffic.output_tps_peak / per_replica_decode)
 
     # Little's Law: E[concurrent requests] = λ * E[latency]
     # Rough latency: compute-only TTFT (no queue) + osl * ITL
-    # ITL = step_time = max_concurrent_seqs / decode_tps_gpu * tp (per-token wait per request)
+    # ITL = step_time = max_concurrent_seqs / decode_tps_gpu (both TP-group scale)
     ttft_rough_s = isl / per_replica_prefill
-    itl_s = max_concurrent_seqs / (decode_tps_gpu * tp)
+    itl_s = max_concurrent_seqs / decode_tps_gpu
     avg_latency_s = ttft_rough_s + osl * itl_s
     peak_concurrent_req = traffic.peak_rps * avg_latency_s
     replicas_concurrency = math.ceil(peak_concurrent_req / max_concurrent_seqs)
@@ -386,8 +409,15 @@ def plan(
     traffic_class: str,
     gpu_mem_util: float = 0.90,
     runtime: str = "vllm",
+    batch_efficiency: float = 0.70,
 ) -> CapacityEstimate:
-    """Full planning pipeline.  Returns a CapacityEstimate with range + confidence."""
+    """Full planning pipeline.  Returns a CapacityEstimate with range + confidence.
+
+    batch_efficiency: fraction of max_concurrent_seqs that are actually in flight
+        in steady-state continuous batching (vLLM default ≈ 0.70).  The roofline
+        decode ceiling is computed at this effective batch rather than the
+        theoretical maximum — prevents the common under-provisioning mistake.
+    """
 
     warnings: list[str] = []
     assumptions: list[str] = []
@@ -404,10 +434,28 @@ def plan(
     bw_eff = conf.bw_eff_used
 
     # ── 4. Ceilings ───────────────────────────────────────────────────────
-    pfill_tps = prefill_ceiling(gpu, model, dtype, isl, mfu, tp)
+    pfill_tps = prefill_ceiling(gpu, model, dtype, isl, mfu, bw_eff, tp)
 
     avg_ctx = isl + osl // 2        # average context mid-generation
-    decode_tps = decode_ceiling(gpu, model, dtype, kv.max_concurrent_seqs, avg_ctx, bw_eff, tp)
+
+    # Effective batch: continuous batching is never 100% full in steady state.
+    eff_batch = max(1, int(kv.max_concurrent_seqs * batch_efficiency))
+
+    # KV-ratio-aware bandwidth efficiency for decode.
+    # When KV traffic >> weight traffic, scattered PagedAttention reads degrade
+    # effective HBM bandwidth below the flat bw_eff assumption.
+    #   kv_ratio = total_kv_bytes_in_flight / weight_bytes
+    weight_bytes_active = model.active_params * DTYPE_BYTES.get(dtype, 2.0)
+    kv_bytes_inflight = kv.kv_bytes_per_token * avg_ctx * eff_batch
+    kv_ratio = kv_bytes_inflight / max(weight_bytes_active, 1.0)
+    if kv_ratio > 10.0:
+        decode_bw_eff = max(0.22, bw_eff * 0.70)   # very KV-heavy (long context + large batch)
+    elif kv_ratio > 3.0:
+        decode_bw_eff = max(0.22, bw_eff * 0.85)   # moderately KV-heavy
+    else:
+        decode_bw_eff = bw_eff                       # weight-dominant (short context or small batch)
+
+    decode_tps = decode_ceiling(gpu, model, dtype, eff_batch, avg_ctx, decode_bw_eff, tp)
 
     # ── 5. Sizing ─────────────────────────────────────────────────────────
     sz = size_replicas(traffic, pfill_tps, decode_tps, kv.max_concurrent_seqs, tp, traffic_class, isl, osl)
@@ -452,12 +500,18 @@ def plan(
         warnings.append(note)
 
     # ── 9. Assumptions ────────────────────────────────────────────────────
+    kv_regime = (
+        "very KV-heavy" if kv_ratio > 10.0 else
+        "KV-heavy" if kv_ratio > 3.0 else
+        "weight-dominant"
+    )
     assumptions += [
         f"GPU memory utilization cap: {gpu_mem_util:.0%}",
         f"MFU (prefill): {mfu:.2f} ({'from anchor' if conf.anchor_matched else 'GPU default'})",
-        f"Bandwidth efficiency (decode): {bw_eff:.2f} ({'from anchor' if conf.anchor_matched else 'GPU default'})",
+        f"Bandwidth efficiency (decode): {decode_bw_eff:.2f} (base={bw_eff:.2f}, KV ratio={kv_ratio:.1f} → {kv_regime})",
+        f"Batch efficiency: {batch_efficiency:.0%} of max_concurrent_seqs ({eff_batch}/{kv.max_concurrent_seqs} seqs)",
         f"Traffic headroom ({traffic_class}): {sz['headroom_factor']:.2f}x",
-        f"Tensor parallelism: tp={tp}",
+        f"Tensor parallelism: tp={tp} ({sz['replicas']} replicas × {tp} GPUs = {sz['replicas'] * tp} total GPUs)",
         f"Fixed overhead per GPU: {FIXED_OVERHEAD_BYTES/1e9:.0f} GB",
         f"Average context for decode sizing: {isl + osl // 2} tokens (ISL + OSL/2)",
         "TTFT queue model: M/M/1 heuristic — must be validated on live GPU.",
@@ -481,7 +535,12 @@ def plan(
         replicas_concurrency=sz["replicas_concurrency"],
         mfu_used=mfu,
         bw_eff_used=bw_eff,
+        decode_bw_eff_used=decode_bw_eff,
         anchor_matched=conf.anchor_matched,
+        total_gpus=sz["replicas"] * tp,
+        tpot_ms=(eff_batch / decode_tps) * 1000.0 if decode_tps > 0 else 0.0,
+        eff_batch_used=eff_batch,
+        kv_ratio=kv_ratio,
     )
 
 
@@ -521,9 +580,11 @@ def render(est: CapacityEstimate, model: ModelProfile, gpu: GpuProfile) -> str:
         f"  KV cache      : {kv.kv_cache_budget_bytes/1e9:.1f} GB",
         f"  Max seqs/GPU  : {kv.max_concurrent_seqs}",
         "",
-        "── Ceilings (per GPU) ──────────────────────────────────────",
+        "── Ceilings (per TP group) ─────────────────────────────────",
         f"  Prefill TPS   : {_fmt_num(est.prefill_tps_gpu)}  (MFU={est.mfu_used:.0%})",
-        f"  Decode TPS    : {_fmt_num(est.decode_tps_gpu)}  (bw_eff={est.bw_eff_used:.0%})",
+        f"  Decode TPS    : {_fmt_num(est.decode_tps_gpu)}  (bw_eff={est.decode_bw_eff_used:.0%}, KV ratio={est.kv_ratio:.1f})",
+        f"  Eff batch     : {est.eff_batch_used} seqs  (batch_efficiency × max_seqs)",
+        f"  TPOT          : {est.tpot_ms:.1f} ms/token  (at eff_batch)",
         "",
         "── Sizing ──────────────────────────────────────────────────",
         f"  Replicas (prefill-driven) : {est.replicas_prefill}",
@@ -532,6 +593,7 @@ def render(est: CapacityEstimate, model: ModelProfile, gpu: GpuProfile) -> str:
         f"  Binding constraint        : {est.binding_constraint.upper()}",
         f"  Base replicas             : {max(est.replicas_prefill, est.replicas_decode, est.replicas_concurrency)}",
         f"  After headroom            : {est.replicas}",
+        f"  Total GPUs                : {est.total_gpus}  ({est.replicas} replicas × tp)",
         "",
         f"  ┌─────────────────────────────────────────────────┐",
         f"  │  RECOMMENDED:  {est.replicas_low} – {est.replicas_high} replicas            │",

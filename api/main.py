@@ -152,6 +152,11 @@ def create_app(
             "max_concurrent_seqs": est.kv_budget.max_concurrent_seqs,
             "mfu_used": est.mfu_used,
             "bw_eff_used": est.bw_eff_used,
+            "decode_bw_eff_used": est.decode_bw_eff_used,
+            "total_gpus": est.total_gpus,
+            "tpot_ms": est.tpot_ms,
+            "eff_batch_used": est.eff_batch_used,
+            "kv_ratio": est.kv_ratio,
             "warnings": est.warnings,
             "assumptions": est.assumptions,
         }

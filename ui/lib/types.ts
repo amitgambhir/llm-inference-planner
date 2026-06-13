@@ -32,11 +32,19 @@ export interface EstimateOut {
   payload: {
     avg_rps: number;
     peak_rps: number;
+    input_tps_peak: number;
+    output_tps_peak: number;
     ttft_ms: number;
     max_concurrent_seqs: number;
     mfu_used: number;
+    bw_eff_used: number;
+    decode_bw_eff_used: number;
     prefill_tps_gpu: number;
     decode_tps_gpu: number;
+    total_gpus: number;
+    tpot_ms: number;
+    eff_batch_used: number;
+    kv_ratio: number;
     warnings: string[];
     assumptions: string[];
   };

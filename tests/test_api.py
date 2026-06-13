@@ -190,6 +190,16 @@ def test_estimate_payload_has_warnings(client, scenario_id):
     assert "warnings" in data["payload"]
 
 
+def test_estimate_payload_has_throughput_fields(client, scenario_id):
+    data = client.post("/estimate", json={"scenario_id": scenario_id}).json()
+    p = data["payload"]
+    assert "total_gpus" in p and p["total_gpus"] >= 1
+    assert "tpot_ms" in p and p["tpot_ms"] >= 0
+    assert "eff_batch_used" in p and p["eff_batch_used"] >= 1
+    assert "kv_ratio" in p and p["kv_ratio"] >= 0
+    assert "decode_bw_eff_used" in p and 0 < p["decode_bw_eff_used"] <= 1
+
+
 def test_estimate_unknown_scenario_404(client):
     r = client.post("/estimate", json={"scenario_id": 9999})
     assert r.status_code == 404

@@ -55,6 +55,9 @@ function EstimateResultsInner() {
           { label: "Recommended replicas", value: estimate.replicas },
           { label: "Range", value: `${estimate.replicas_low} – ${estimate.replicas_high}` },
           { label: "Predicted TTFT", value: `${p.ttft_ms?.toFixed(0) ?? "–"} ms` },
+          { label: "Total GPUs", value: p.total_gpus ?? "–" },
+          { label: "TPOT (inter-token latency)", value: `${p.tpot_ms?.toFixed(1) ?? "–"} ms` },
+          { label: "KV ratio", value: p.kv_ratio?.toFixed(1) ?? "–" },
         ].map(({ label, value }) => (
           <div key={label} className="bg-white rounded-xl border p-4 text-center">
             <p className="text-2xl font-bold text-brand-700">{value}</p>
@@ -81,10 +84,12 @@ function EstimateResultsInner() {
           {[
             ["Avg RPS", p.avg_rps?.toFixed(2)],
             ["Peak RPS", p.peak_rps?.toFixed(2)],
-            ["Prefill ceiling/GPU", `${p.prefill_tps_gpu?.toFixed(0)} tok/s`],
-            ["Decode ceiling/GPU", `${p.decode_tps_gpu?.toFixed(0)} tok/s`],
+            ["Prefill ceiling (TP group)", `${p.prefill_tps_gpu?.toFixed(0)} tok/s`],
+            ["Decode ceiling (TP group)", `${p.decode_tps_gpu?.toFixed(0)} tok/s`],
             ["Max concurrent seqs/replica", p.max_concurrent_seqs],
+            ["Effective batch (70% fill)", p.eff_batch_used],
             ["MFU used", `${(p.mfu_used * 100).toFixed(1)}%`],
+            ["Decode bw_eff (KV-adjusted)", `${((p.decode_bw_eff_used ?? 0) * 100).toFixed(1)}%`],
           ].map(([k, v]) => (
             <div key={k as string} className="flex justify-between border-b py-1">
               <dt className="text-gray-500">{k}</dt>
