@@ -10,6 +10,22 @@
 #
 # kv_bytes_per_token = 2 * num_layers * num_kv_heads * head_dim * kv_dtype_bytes  (GQA: use kv_heads)
 
+llama-2-70b:                          # dense — backs MLPerf v5.0 validation points
+  display_name: "Llama 2 70B"
+  is_moe: false
+  total_params: 69_924_000_000
+  active_params: 69_924_000_000
+  num_layers: 80
+  d_model: 8192
+  num_q_heads: 64
+  num_kv_heads: 8                      # GQA — identical architecture to Llama 3.1 70B
+  head_dim: 128
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 2                    # bf16 KV (commonly served at bf16 for MLPerf)
+  geometry_source: known
+  context_len: 4096
+
 gpt-oss-20b:                          # MoE seed — backs the golden test
   display_name: "gpt-oss-20b"
   is_moe: true
@@ -132,6 +148,40 @@ gemma-2-9b:                           # dense, Google ecosystem — but NON-STAN
     naive kv_bytes_per_token * context OVERESTIMATES KV. The planner's kv_budget() should treat
     sliding-window layers specially (cap at window) or it will undersize concurrency for Gemma.
     Combined with head_dim=256, Gemma's per-token KV is unusually large on the global layers.
+
+llama-3.3-70b:                        # dense — same arch as 3.1-70B, backs TRT-LLM validation points
+  display_name: "Llama 3.3 70B"
+  is_moe: false
+  total_params: 70_600_000_000
+  active_params: 70_600_000_000
+  num_layers: 80
+  d_model: 8192
+  num_q_heads: 64
+  num_kv_heads: 8                      # GQA
+  head_dim: 128
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0          # bf16; fp8 serving → 1.0
+  kv_dtype_bytes: 1
+  geometry_source: known
+  context_len: 131072
+
+llama-4-maverick:                     # 128-expert sparse MoE — backs Maverick validation points
+  display_name: "Llama 4 Maverick"
+  is_moe: true
+  total_params: 400_000_000_000       # ~400B total (all expert weights reside in HBM)
+  active_params: 52_000_000_000       # ~52B active per token (attention + 8/128 experts; estimate)
+  num_experts: 128
+  experts_per_token: 8                # rough estimate; exact routing sparsity not publicly confirmed
+  num_layers: 48
+  d_model: 5120
+  num_q_heads: 40
+  num_kv_heads: 8                     # GQA — iRoPE interleaved architecture
+  head_dim: 128
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 1
+  geometry_source: estimated          # MoE expert count / active routing not officially confirmed
+  context_len: 1048576                # 1M token context window (Meta claim)
 
 # Custom models supplied at request time get geometry_source: "estimated" when the rough
 # param-only path fills in missing geometry — which triggers a confidence downgrade + warning.

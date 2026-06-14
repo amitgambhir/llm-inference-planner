@@ -1,0 +1,375 @@
+# catalog/benchmarks_public.yaml
+# Citable public benchmark points for fitting and validating efficiency curves.
+#
+# TWO TABLE POLICY:
+#   benchmarks_public.yaml  -- public MLPerf/vendor points, ships with repo,
+#                              used by validate.fit() to tune efficiency_constants.yaml
+#   anchors.yaml            -- user's own optional per-deployment measurements
+#   Never conflate them. This file grounds the defaults; anchors.yaml refines them.
+#
+# ENGINE CONFOUND POLICY (read before adding points):
+#   Different engines realize different fractions of peak for the SAME hardware.
+#   We model this with a per-engine `engine_factor` (in efficiency_constants.yaml),
+#   with vLLM as the reference engine (factor = 1.0). Therefore:
+#     engine: vllm   -> fit_role: level   (pins the absolute LEVEL; this is the deploy target)
+#     engine: trtllm -> fit_role: shape   (TRT-LLM is internally consistent across ISL, so it
+#                                          pins the SHAPE of f_isl/f_size; its LEVEL is absorbed
+#                                          by engine_factor[trtllm], NOT applied to vLLM predictions)
+#       ambiguous engine -> fit_role: sanity (excluded from fit; sanity check only)
+#   A user prediction is ALWAYS made at their actual runtime's engine_factor. Never report a
+#   TRT-LLM-level number for a vLLM deployment.
+#
+#   `engine_version` matters too (vLLM 0.6 was ~2.7x faster than 0.5). Record it; the fit may
+#   down-weight stale versions.
+#
+# metric field:
+#   total_output_tps       : aggregate OUTPUT tokens/sec for the (tp, batch) config described
+#   per_user_decode_tps    : aggregate decode tps / concurrent batch (weight-amortization signal)
+#   agg_throughput_tps_per_gpu : total output tps / GPU count (legacy MLPerf-cluster numbers only)
+#
+# scenario field:
+#   offline : max-throughput run, no latency constraint; batch=null -> max_concurrent_seqs
+#   server  : Poisson arrivals under a TTFT/TPOT SLO
+#   latency : specific batch configuration with stated ISL/OSL
+#
+# fit_role: level | shape | sanity   (see engine policy above)
+
+schema_version: 2
+
+points:
+
+  # ---------------------------------------------------------------------------
+  # vLLM -- fit_role: level  (reference engine; pins absolute efficiency LEVEL)
+  # ---------------------------------------------------------------------------
+
+  # -- Red Hat MLPerf v5.1 -- Llama-3.1-8B-FP8, single GPU, vLLM 0.10.0 ------
+  # CNN-DailyMail subset: mean ISL 778, mean OSL 73. Offline + Server scenarios.
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 778
+    osl: 73
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 5777
+    engine: vllm
+    engine_version: "0.10.0"
+    fit_role: level
+    source: "Red Hat MLPerf v5.1 -- Llama-3.1-8B-FP8, 1xH100-SXM-80GB, Offline"
+    url: "https://www.redhat.com/en/blog/efficient-and-reproducible-llm-inference-red-hat-mlperf-inference-v51-results"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 778
+    osl: 73
+    batch: null
+    scenario: server
+    metric: total_output_tps
+    measured: 5104
+    engine: vllm
+    engine_version: "0.10.0"
+    fit_role: level
+    source: "Red Hat MLPerf v5.1 -- 1xH100-SXM-80GB, Server (TTFT/TPOT bound)"
+
+  - model: llama-3.1-8b
+    gpu: l40s
+    dtype: fp8
+    tp: 1
+    isl: 778
+    osl: 73
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 1642
+    engine: vllm
+    engine_version: "0.10.0"
+    fit_role: level
+    source: "Red Hat MLPerf v5.1 -- 1xL40S-PCIE-48GB, Offline"
+
+  - model: llama-3.1-8b
+    gpu: l40s
+    dtype: fp8
+    tp: 1
+    isl: 778
+    osl: 73
+    batch: null
+    scenario: server
+    metric: total_output_tps
+    measured: 1207
+    engine: vllm
+    engine_version: "0.10.0"
+    fit_role: level
+    source: "Red Hat MLPerf v5.1 -- 1xL40S-PCIE-48GB, Server"
+
+  # -- Trelis one-click -- Llama-3.1-8B-FP8, A100 SXM, vLLM ------------------
+  # batch=1 vs batch=64 pair: key signal for the weight-amortization curve (g_batch).
+  - model: llama-3.1-8b
+    gpu: a100_80gb_sxm
+    dtype: fp8
+    tp: 1
+    isl: 64
+    osl: 500
+    batch: 1
+    scenario: latency
+    metric: per_user_decode_tps
+    measured: 89
+    engine: vllm
+    fit_role: level
+    source: "Trelis one-click-llms -- Llama-3.1-8B-FP8, A100 SXM, batch 1"
+
+  - model: llama-3.1-8b
+    gpu: a100_80gb_sxm
+    dtype: fp8
+    tp: 1
+    isl: 64
+    osl: 500
+    batch: 64
+    scenario: latency
+    metric: per_user_decode_tps
+    measured: 38
+    engine: vllm
+    fit_role: level
+    source: "Trelis one-click-llms -- Llama-3.1-8B-FP8, A100 SXM, batch 64 (agg 2,432)"
+
+  # ---------------------------------------------------------------------------
+  # TensorRT-LLM -- fit_role: shape  (internally consistent ISL sweep;
+  #   LEVEL via engine_factor; SHAPE pins f_isl/f_size curves)
+  # Source: NVIDIA/TensorRT-LLM v0.20 perf-overview.md.
+  # Offline max-throughput, synthetic uniform dataset, kv_cache_free_gpu_mem_fraction=0.95,
+  # ModelOpt FP8, PyTorch backend. metric = Total Output Throughput (tokens/sec).
+  # ---------------------------------------------------------------------------
+
+  # -- Llama-3.1-8B-FP8, H100, TP=1 -- clean ISL sweep (short to very long) --
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 128
+    osl: 128
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 27688.36
+    engine: trtllm
+    engine_version: "0.20"
+    kv_frac: 0.95
+    fit_role: shape
+    source: "TensorRT-LLM v0.20 perf-overview -- Llama-3.1-8B-FP8, H100"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 1000
+    osl: 1000
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 15270.62
+    engine: trtllm
+    engine_version: "0.20"
+    kv_frac: 0.95
+    fit_role: shape
+    source: "TensorRT-LLM v0.20 perf-overview"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 2048
+    osl: 128
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 3414.67
+    engine: trtllm
+    engine_version: "0.20"
+    kv_frac: 0.95
+    fit_role: shape
+    source: "TensorRT-LLM v0.20 perf-overview"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 5000
+    osl: 500
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 3394.54
+    engine: trtllm
+    engine_version: "0.20"
+    kv_frac: 0.95
+    fit_role: shape
+    source: "TensorRT-LLM v0.20 perf-overview"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 20000
+    osl: 2000
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 1345.42
+    engine: trtllm
+    engine_version: "0.20"
+    kv_frac: 0.95
+    fit_role: shape
+    source: "TensorRT-LLM v0.20 perf-overview -- long-context anchor, brackets the 9k golden case"
+
+  - model: llama-3.1-8b
+    gpu: h200_sxm
+    dtype: fp8
+    tp: 1
+    isl: 20000
+    osl: 2000
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 1696.66
+    engine: trtllm
+    engine_version: "0.20"
+    kv_frac: 0.95
+    fit_role: shape
+    source: "TensorRT-LLM v0.20 perf-overview -- H200 long-context"
+
+  # -- Llama-3.3-70B-FP8, H100, TP=8 -- large dense, validates the TP path ----
+  - model: llama-3.3-70b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 8
+    isl: 1024
+    osl: 2048
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 11004.31
+    engine: trtllm
+    engine_version: "0.20"
+    kv_frac: 0.95
+    fit_role: shape
+    source: "TensorRT-LLM v0.20 perf-overview -- Llama-3.3-70B-FP8, 8xH100"
+
+  - model: llama-3.3-70b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 8
+    isl: 5000
+    osl: 500
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 2369.84
+    engine: trtllm
+    engine_version: "0.20"
+    kv_frac: 0.95
+    fit_role: shape
+    source: "TensorRT-LLM v0.20 perf-overview"
+
+  - model: llama-3.3-70b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 8
+    isl: 20000
+    osl: 2000
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 1554.10
+    engine: trtllm
+    engine_version: "0.20"
+    kv_frac: 0.95
+    fit_role: shape
+    source: "TensorRT-LLM v0.20 perf-overview"
+
+  # -- Llama-4-Maverick-FP8 (128-expert MoE), H200, TP=8 -- MoE long-ISL -----
+  - model: llama-4-maverick
+    gpu: h200_sxm
+    dtype: fp8
+    tp: 8
+    isl: 1024
+    osl: 2048
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 16859.45
+    engine: trtllm
+    engine_version: "0.20"
+    kv_frac: 0.95
+    fit_role: shape
+    source: "TensorRT-LLM v0.20 perf-overview -- Llama-4-Maverick-FP8, 8xH200 (MoE)"
+
+  - model: llama-4-maverick
+    gpu: h200_sxm
+    dtype: fp8
+    tp: 8
+    isl: 2048
+    osl: 2048
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 12800.89
+    engine: trtllm
+    engine_version: "0.20"
+    kv_frac: 0.95
+    fit_role: shape
+    source: "TensorRT-LLM v0.20 perf-overview (MoE)"
+
+  - model: llama-4-maverick
+    gpu: h200_sxm
+    dtype: fp8
+    tp: 8
+    isl: 20000
+    osl: 2000
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: 1764.27
+    engine: trtllm
+    engine_version: "0.20"
+    kv_frac: 0.95
+    fit_role: shape
+    source: "TensorRT-LLM v0.20 perf-overview -- MoE long-context"
+
+  # ---------------------------------------------------------------------------
+  # SANITY ONLY -- fit_role: sanity  (EXCLUDED from fit)
+  # Aggregate MLPerf-cluster numbers: engine attribution and replica/TP split are
+  # not verifiable from the public summary, so they pollute a level fit. Keep for a
+  # coarse order-of-magnitude sanity check only.
+  # ---------------------------------------------------------------------------
+
+  - model: llama-2-70b
+    gpu: h200_sxm
+    dtype: fp8
+    tp: 8
+    isl: 550
+    osl: 153
+    batch: null
+    scenario: offline
+    metric: agg_throughput_tps_per_gpu
+    measured: 4125
+    engine: nvidia
+    fit_role: sanity
+    source: "CoreWeave MLPerf v5.0 -- Llama-2-70B (33,000 / 8 GPUs; NVIDIA stack, TP/replica split unverified)"
+    url: "https://www.coreweave.com/lp/mlperf-benchmark-results"
+
+  - model: llama-2-70b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 8
+    isl: 550
+    osl: 153
+    batch: null
+    scenario: offline
+    metric: agg_throughput_tps_per_gpu
+    measured: 2586
+    engine: llmboost
+    fit_role: sanity
+    source: "MangoBoost/Juniper MLPerf v5.0 -- Llama-2-70B (82,749 / 32 GPUs; LLMBoost, not vLLM)"

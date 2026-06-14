@@ -39,6 +39,7 @@ from planner.catalog import (
 # confidence and ConfidenceResult live in planner.confidence; re-exported here
 # so existing imports from planner.capacity continue to work.
 from planner.confidence import ConfidenceResult, confidence  # noqa: F401
+import planner.efficiency as _eff
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -482,30 +483,42 @@ def plan(
 
     # ── 3. Confidence + calibrated MFU / bw_eff ───────────────────────────
     conf = confidence(model, gpu, dtype, isl, osl, kv.max_concurrent_seqs)
-    mfu = conf.mfu_used
-    bw_eff = conf.bw_eff_used
+
+    # Precedence: measured anchor > regime-aware efficiency curve > hard floor.
+    # Anchors win unconditionally (they're from a real GPU measurement).
+    # The no-anchor path uses efficiency curves grounded in public benchmarks
+    # rather than the flat GPU-catalog defaults (0.40 / 0.70).
+    if conf.anchor_matched:
+        mfu = conf.mfu_used
+        bw_eff_base = conf.bw_eff_used   # anchor calibrated at measurement conditions
+        eff_source = "anchor"
+    else:
+        mfu = _eff.mfu_prefill(model, gpu, dtype, isl)
+        bw_eff_base = _eff.bw_eff_prefill(gpu)   # for prefill bandwidth floor
+        eff_source = "curve"
 
     # ── 4. Ceilings ───────────────────────────────────────────────────────
-    pfill_tps = prefill_ceiling(gpu, model, dtype, isl, mfu, bw_eff, tp)
+    pfill_tps = prefill_ceiling(gpu, model, dtype, isl, mfu, bw_eff_base, tp)
 
     avg_ctx = isl + osl // 2        # average context mid-generation
 
     # Effective batch: continuous batching is never 100% full in steady state.
     eff_batch = max(1, int(kv.max_concurrent_seqs * batch_efficiency))
 
-    # KV-ratio-aware bandwidth efficiency for decode.
-    # When KV traffic >> weight traffic, scattered PagedAttention reads degrade
-    # effective HBM bandwidth below the flat bw_eff assumption.
-    #   kv_ratio = total_kv_bytes_in_flight / weight_bytes
+    # kv_ratio: ratio of KV traffic to active weight traffic at eff_batch.
+    # Reported in assumptions and used by bw_eff_decode curve.
     weight_bytes_active = model.active_params * DTYPE_BYTES.get(dtype, 2.0)
     kv_bytes_inflight = kv.kv_bytes_per_token * avg_ctx * eff_batch
     kv_ratio = kv_bytes_inflight / max(weight_bytes_active, 1.0)
-    if kv_ratio > 10.0:
-        decode_bw_eff = max(0.22, bw_eff * 0.70)   # very KV-heavy (long context + large batch)
-    elif kv_ratio > 3.0:
-        decode_bw_eff = max(0.22, bw_eff * 0.85)   # moderately KV-heavy
+
+    # Decode bandwidth efficiency: anchor path keeps calibrated value;
+    # no-anchor path uses smooth curve absorbing batch amortization + KV scatter.
+    # Replaces the old step-threshold (kv_ratio 3/10) block with a differentiable
+    # form that the fit() optimizer can tune against public benchmark data.
+    if conf.anchor_matched:
+        decode_bw_eff = bw_eff_base
     else:
-        decode_bw_eff = bw_eff                       # weight-dominant (short context or small batch)
+        decode_bw_eff = _eff.bw_eff_decode(gpu, eff_batch, kv_ratio)
 
     decode_tps = decode_ceiling(gpu, model, dtype, eff_batch, avg_ctx, decode_bw_eff, tp, mfu=mfu)
 
@@ -549,9 +562,10 @@ def plan(
                 "may be higher. Validate with run_bench.py before committing."
             )
 
-    if conf.level == "low":
+    if conf.level == "default":
         warnings.append(
-            "LOW confidence: estimate uses GPU-default MFU and bandwidth efficiency. "
+            "DEFAULT confidence: no anchor data — estimate uses regime-aware efficiency "
+            "curves (validated to ±15% median on public benchmarks). "
             "Validate on a live GPU before committing infrastructure."
         )
     if isl >= CHUNKED_PREFILL_ISL_THRESHOLD:
@@ -578,8 +592,8 @@ def plan(
     )
     assumptions += [
         f"GPU memory utilization cap: {gpu_mem_util:.0%}",
-        f"MFU (prefill): {mfu:.2f} ({'from anchor' if conf.anchor_matched else 'GPU default'})",
-        f"Bandwidth efficiency (decode): {decode_bw_eff:.2f} (base={bw_eff:.2f}, KV ratio={kv_ratio:.1f} → {kv_regime})",
+        f"MFU (prefill): {mfu:.2f} (from {eff_source})",
+        f"Bandwidth efficiency (decode): {decode_bw_eff:.2f} (from {eff_source}, KV ratio={kv_ratio:.1f} → {kv_regime})",
         f"Batch efficiency: {batch_efficiency:.0%} of max_concurrent_seqs ({eff_batch}/{kv.max_concurrent_seqs} seqs)",
         f"Traffic headroom ({traffic_class}): {sz['headroom_factor']:.2f}x",
         f"Tensor parallelism: tp={tp} ({sz['replicas']} replicas × {tp} GPUs = {sz['replicas'] * tp} total GPUs)",
@@ -605,7 +619,7 @@ def plan(
         replicas_decode=sz["replicas_decode"],
         replicas_concurrency=sz["replicas_concurrency"],
         mfu_used=mfu,
-        bw_eff_used=bw_eff,
+        bw_eff_used=bw_eff_base,
         decode_bw_eff_used=decode_bw_eff,
         anchor_matched=conf.anchor_matched,
         tp_used=tp,

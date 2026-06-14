@@ -182,7 +182,7 @@ def test_notes_is_list(two_entries):
 def test_low_confidence_note_present_when_low_entry_exists(two_entries):
     result = compare(two_entries)
     combined = " ".join(result.notes).lower()
-    assert "low confidence" in combined
+    assert "default confidence" in combined
 
 
 def test_h200_vs_h100_kv_note():

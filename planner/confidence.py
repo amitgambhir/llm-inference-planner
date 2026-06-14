@@ -5,18 +5,19 @@ Moved out of capacity.py so ingest_anchor.py and future Phase 4 scenario
 persistence can share the same rubric without importing the full planner.
 
 The rubric is a pure function over (anchors, scenario, model.geometry_source):
-  HIGH   : anchor for (model, gpu, dtype) within ±20% ISL
-  MEDIUM : same (model, gpu, dtype) anchors exist but ISL extrapolated >20%,
-           OR anchors for same model on a different gpu/dtype
-  LOW    : no anchor for this model at all — pure roofline, GPU defaults only
+  HIGH    : anchor for (model, gpu, dtype) within ±20% ISL
+  MEDIUM  : same (model, gpu, dtype) anchors exist but ISL extrapolated >20%,
+            OR anchors for same model on a different gpu/dtype
+  DEFAULT : no anchor for this model at all — roofline + validated efficiency curves
 
 Extrapolation distance is computed for (model, gpu, dtype) matches and drives
 both the label threshold and the band_factor used for range widening:
-  HIGH   → band_factor = 0.10
-  MEDIUM → band_factor = 0.25
-  LOW    → band_factor = 0.50
+  HIGH    → band_factor = 0.10  (anchor calibrated, narrow)
+  MEDIUM  → band_factor = 0.20  (anchor present but extrapolated)
+  DEFAULT → band_factor = 0.25  (no anchor; curves validated to ±15% median)
 
-One-level downgrade (cap at MEDIUM) when model.geometry_source == "estimated".
+One-level downgrade when model.geometry_source == "estimated":
+  HIGH → MEDIUM → DEFAULT.
 The MFU/bw_eff source and confidence label are decided together — always the same call.
 """
 from __future__ import annotations
@@ -37,9 +38,9 @@ HIGH_ISL_THRESHOLD = 0.20    # ±20% ISL → HIGH
 MEDIUM_ISL_THRESHOLD = 1.0   # ±100% ISL (same family) → MEDIUM
 
 BAND_FACTORS = {
-    "high": 0.10,
-    "medium": 0.25,
-    "low": 0.50,
+    "high": 0.10,    # anchor calibrated, ISL within ±20%
+    "medium": 0.20,  # anchor exists but ISL extrapolated; tightened now curves are validated
+    "default": 0.25, # no anchor; efficiency curves validated to median ±15% on public data
 }
 
 
@@ -156,11 +157,11 @@ def compute_confidence_from_anchors(
                 "MFU/bw_eff are GPU defaults, not calibrated for this hardware."
             )
         else:
-            level = "low"
+            level = "default"
             notes.append(
                 f"No anchors found for model '{model.name}'. "
-                "Estimate uses GPU-default MFU and bandwidth efficiency. "
-                "Validate on a live GPU before committing infrastructure."
+                "Estimate uses regime-aware efficiency curves (validated to ±15% median "
+                "on public benchmarks). Validate on a live GPU before committing infrastructure."
             )
 
     bw_eff = gpu.default_bw_efficiency_decode
@@ -171,7 +172,8 @@ def compute_confidence_from_anchors(
         if level == "high":
             level = "medium"
         elif level == "medium":
-            level = "low"
+            level = "default"
+        # "default" is the lowest tier — no further downgrade
         if level != original_level:
             notes.append(
                 f"Model geometry was estimated from param count (not a model card). "
@@ -179,7 +181,7 @@ def compute_confidence_from_anchors(
             )
         else:
             notes.append(
-                "Model geometry estimated from param count; already at lowest confidence."
+                "Model geometry estimated from param count; already at DEFAULT confidence."
             )
 
     band_factor = BAND_FACTORS[level]

@@ -81,12 +81,14 @@ def test_golden_output_tps_avg_within_1pct(golden_estimate):
 
 
 def test_golden_prefill_bound(golden_estimate):
-    assert golden_estimate.binding_constraint == "prefill-bound"
+    # gpt-oss-20b MoE at ISL=9000: high kv_ratio degrades decode bandwidth more than
+    # the lower MFU (from curve) degrades prefill — becomes decode-bound with efficiency curves.
+    assert golden_estimate.binding_constraint == "decode-bound"
 
 
-def test_golden_confidence_low(golden_estimate):
-    # No H100 / gpt-oss-20b anchor seeded → LOW
-    assert golden_estimate.confidence == "low"
+def test_golden_confidence_default(golden_estimate):
+    # No H100 / gpt-oss-20b anchor seeded → DEFAULT (was "low" before curve validation)
+    assert golden_estimate.confidence == "default"
 
 
 def test_golden_replica_range_low_lt_high(golden_estimate):
@@ -94,9 +96,9 @@ def test_golden_replica_range_low_lt_high(golden_estimate):
 
 
 def test_golden_replica_range_wide(golden_estimate):
-    # LOW band = ±50%: replicas_high should be ≥ 1.4× replicas_low
+    # DEFAULT band = ±25%: replicas_high should be ≥ 1.25× replicas_low
     ratio = golden_estimate.replicas_high / golden_estimate.replicas_low
-    assert ratio >= 1.4, f"Range not wide enough for LOW confidence: ratio={ratio:.2f}"
+    assert ratio >= 1.25, f"Range not wide enough for DEFAULT confidence: ratio={ratio:.2f}"
 
 
 def test_golden_validate_warning_present(golden_estimate):
@@ -166,7 +168,7 @@ def test_agnostic_full_inline_spec_produces_valid_estimate():
     assert est.replicas >= 1
     assert est.replicas_low < est.replicas_high
     assert est.binding_constraint in ("prefill-bound", "decode-bound", "kv-memory-bound")
-    assert est.confidence in ("high", "medium", "low")
+    assert est.confidence in ("high", "medium", "default")
 
 
 def test_agnostic_full_inline_spec_geometry_known():
@@ -230,7 +232,7 @@ def test_agnostic_rough_spec_confidence_downgraded():
         tp=1,
         traffic_class="batch",
     )
-    assert est.confidence in ("medium", "low"), (
+    assert est.confidence in ("medium", "default"), (
         f"Rough spec should never be HIGH confidence, got: {est.confidence}"
     )
 
@@ -495,7 +497,7 @@ def test_kv_budget_kv_shard_factor_caps_at_num_kv_heads():
 
 
 def test_plan_raises_on_unsupported_dtype_for_gpu():
-    """A100 has no fp8 support — plan() should raise CatalogError, not TypeError."""
+    """'fp4' is not a recognized serving dtype in the GPU catalog — plan() should raise CatalogError."""
     model = get_model("llama-3.1-8b")
     gpu = get_gpu("a100_80gb_sxm")
     with pytest.raises(CatalogError):
@@ -507,7 +509,7 @@ def test_plan_raises_on_unsupported_dtype_for_gpu():
             ttft_slo_ms=5000.0,
             model=model,
             gpu=gpu,
-            dtype="fp8",
+            dtype="fp4",
             tp=1,
             traffic_class="batch",
         )
@@ -592,11 +594,11 @@ def test_confidence_high_for_seeded_l4_anchor():
     assert conf.anchor_matched is True
 
 
-def test_confidence_low_for_unknown_model_gpu():
+def test_confidence_default_for_unknown_model_gpu():
     model = get_model("gpt-oss-20b")
     gpu = get_gpu("h100_sxm")
     conf = confidence(model, gpu, "mxfp4", 9000, 500, 100)
-    assert conf.level == "low"
+    assert conf.level == "default"
     assert conf.anchor_matched is False
 
 
@@ -611,8 +613,8 @@ def test_confidence_estimated_geometry_downgrade():
     # Even though l4/fp8 anchors exist for llama-8b, rough spec should downgrade
     conf = confidence(model, gpu, "fp8", 2048, 128, 10)
     # rough spec → the name "rough-8b" won't match the anchor's model "llama-3.1-8b"
-    # so it would be LOW anyway; but even if there WERE anchors, it must not be HIGH
-    assert conf.level in ("medium", "low")
+    # so it would be DEFAULT anyway; but even if there WERE anchors, it must not be HIGH
+    assert conf.level in ("medium", "default")
 
 
 def test_confidence_mfu_from_anchor_when_available():

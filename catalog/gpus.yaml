@@ -12,6 +12,8 @@
 
 h100_sxm:
   display_name: "NVIDIA H100 SXM"
+  arch: hopper
+  memory_type: hbm
   mem_gb: 80                          # HBM3
   hbm_bandwidth_gbps: 3350            # 3.35 TB/s
   peak_flops:                         # TFLOP/s, dense
@@ -24,6 +26,8 @@ h100_sxm:
 
 h200_sxm:
   display_name: "NVIDIA H200 SXM"
+  arch: hopper
+  memory_type: hbm
   mem_gb: 141                         # HBM3e — far larger KV budget than H100
   hbm_bandwidth_gbps: 4800            # 4.8 TB/s
   peak_flops:                         # same GH100 die as H100 → identical compute
@@ -36,17 +40,22 @@ h200_sxm:
 
 a100_80gb_sxm:
   display_name: "NVIDIA A100 80GB SXM4"
+  arch: ampere
+  memory_type: hbm
   mem_gb: 80                          # HBM2e
   hbm_bandwidth_gbps: 2039            # SXM4 (PCIe variant is 1935)
   peak_flops:                         # Ampere — NO native FP8
     fp16: 312
     bf16: 312
+    fp8: 312                          # A100 has no native fp8; runs via bf16 path
     mxfp4: 312                        # dequant to bf16; Ampere has no fp8/fp4
   default_mfu_prefill: 0.45           # HBM-rich; often higher realized MFU at low precision
   default_bw_efficiency_decode: 0.70
 
 l40s:
   display_name: "NVIDIA L40S"
+  arch: ada
+  memory_type: gddr
   mem_gb: 48                          # GDDR6
   hbm_bandwidth_gbps: 864             # GDDR6 — much lower BW than HBM parts
   peak_flops:                         # Ada Lovelace
@@ -59,6 +68,8 @@ l40s:
 
 l4:
   display_name: "NVIDIA L4"
+  arch: ada
+  memory_type: gddr
   mem_gb: 24                          # GDDR6
   hbm_bandwidth_gbps: 300
   peak_flops:                         # Ada Lovelace

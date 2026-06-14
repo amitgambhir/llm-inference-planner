@@ -1,0 +1,31 @@
+batch_floor: 0.8
+batch_scale: 30.378784423680003
+bw_base:
+  gddr: 0.3773
+  hbm: 0.43605345487500025
+isl_floor: 0.49
+isl_scale: 512.0
+kv_scale: 2.052730214758922
+mfu_base:
+  ada:
+    bf16: 0.42
+    fp16: 0.42
+    fp8: 0.45
+    mxfp4: 0.45
+  ampere:
+    bf16: 0.5
+    fp16: 0.5
+    fp8: 0.45
+    mxfp4: 0.45
+  blackwell:
+    bf16: 0.58
+    fp8: 0.55
+    mxfp4: 0.55
+  hopper:
+    bf16: 0.55
+    fp16: 0.55
+    fp8: 0.35280000000000006
+    mxfp4: 0.5
+moe_factor: 0.8
+size_floor: 0.803822635850573
+size_scale: 4148409834.45504

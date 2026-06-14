@@ -108,7 +108,7 @@ def test_validated_mode_badge(golden_estimate):
 
 def test_report_includes_confidence_label_low(golden_estimate):
     result = _base_report(golden_estimate)
-    assert "LOW" in result
+    assert "DEFAULT" in result
 
 
 def test_report_includes_confidence_label_high(high_conf_estimate):
@@ -127,7 +127,7 @@ def test_report_includes_confidence_label_high(high_conf_estimate):
 
 def test_report_includes_band_percentage(golden_estimate):
     result = _base_report(golden_estimate)
-    assert "±50%" in result   # LOW confidence = ±50%
+    assert "±25%" in result   # DEFAULT confidence = ±25%
 
 
 # ── Sizing figures ────────────────────────────────────────────────────────────

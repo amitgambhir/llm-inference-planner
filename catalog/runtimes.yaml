@@ -1,10 +1,15 @@
 # catalog/runtimes.yaml
 # Serving runtimes and the tuning flags each exposes. Feeds the Phase 2 config recommendation
 # (which flags the playbook advisor is allowed to recommend for a given runtime).
+#
+# The runtime keys here are the canonical engine names referenced by the `engine` field in
+# benchmarks_public.yaml and by efficiency_constants.yaml's per-engine efficiency factors.
+# vLLM is the REFERENCE engine (engine_factor = 1.0); all others are expressed relative to it.
 
 vllm:
   display_name: "vLLM"
   openai_compatible: true
+  reference_engine: true          # efficiency-curve baseline; engine_factor pinned to 1.0
   flags:
     - max-num-seqs
     - max-model-len
@@ -14,7 +19,7 @@ vllm:
     - kv-cache-dtype
     - gpu-memory-utilization
     - swap-space
-  notes: "Default serving target for the harness. Most flags map directly to the advisor's outputs."
+  notes: "Default serving target for the harness and the deployment surface (RHOAI, run_bench). Most flags map directly to the advisor's outputs."
 
 sglang:
   display_name: "SGLang"
@@ -27,6 +32,25 @@ sglang:
     - enable-radix-cache          # prefix caching analog
     - mem-fraction-static
   notes: "RadixAttention gives strong prefix-cache wins on shared-prefix workloads."
+
+trtllm:
+  display_name: "TensorRT-LLM"
+  openai_compatible: true          # via trtllm-serve / Triton OpenAI frontend
+  flags:
+    - max-batch-size
+    - max-num-tokens
+    - tensor-parallel-size          # tp_size
+    - pipeline-parallel-size        # pp_size — TRT-LLM favors PP for max throughput on big models
+    - max-seq-len
+    - kv-cache-free-gpu-mem-fraction  # analog to gpu-memory-utilization (perf runs use 0.95)
+    - use-paged-context-fmha        # chunked prefill + KV reuse / prefix caching analog
+    - quantization                  # fp8 / fp4 / int4_awq via ModelOpt
+    - cuda-graph-batch-sizes
+  notes: >
+    Highest-efficiency engine (most aggressive kernel tuning) — sits at the upper end of
+    realized MFU/bandwidth, so its benchmark points inform curve SHAPE, not the vLLM LEVEL
+    (see engine_factor in efficiency_constants.yaml). Recent versions use a PyTorch backend
+    (no engine build). NVIDIA's published perf-overview tables are TRT-LLM.
 
 managed:
   display_name: "Managed endpoint (Baseten / Bedrock / Vertex / etc.)"

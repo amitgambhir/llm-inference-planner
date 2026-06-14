@@ -59,6 +59,8 @@ class GpuProfile(BaseModel):
     peak_flops: PeakFlops
     default_mfu_prefill: float = 0.40
     default_bw_efficiency_decode: float = 0.70
+    arch: Optional[str] = None          # "hopper" | "ampere" | "ada" | "blackwell"
+    memory_type: Optional[str] = None   # "hbm" | "gddr"
 
 
 class ModelProfile(BaseModel):

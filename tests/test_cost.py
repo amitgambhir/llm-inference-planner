@@ -138,10 +138,10 @@ def test_breakdown_cost_sums_to_total(golden_estimate):
 
 
 def test_prefill_bound_estimate_has_high_prefill_fraction(golden_estimate):
-    # golden test is prefill-bound → prefill replicas >> decode replicas
-    assert golden_estimate.binding_constraint == "prefill-bound"
+    # golden test is decode-bound (high kv_ratio under efficiency curves) → decode replicas >> prefill replicas
+    assert golden_estimate.binding_constraint == "decode-bound"
     cost = compute_cost(golden_estimate, "h100_sxm", tp=1)
-    assert cost.breakdown.prefill_fraction > cost.breakdown.decode_fraction
+    assert cost.breakdown.decode_fraction > cost.breakdown.prefill_fraction
 
 
 # ---------------------------------------------------------------------------

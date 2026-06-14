@@ -95,7 +95,7 @@ def test_confidence_result_has_band_factor():
     gpu = get_gpu("h100_sxm")
     result = confidence(model, gpu, "mxfp4", 9000, 500, 10)
     assert hasattr(result, "band_factor")
-    assert result.band_factor == 0.50  # LOW → 50%
+    assert result.band_factor == 0.25  # DEFAULT → 25%
 
 
 def test_confidence_high_band_factor():
@@ -112,7 +112,7 @@ def test_confidence_medium_band_factor():
     # ISL=8192 is far from any L4/fp8 anchor (max 4096) → MEDIUM
     result = confidence(model, gpu, "fp8", 8192, 128, 10)
     assert result.level == "medium"
-    assert result.band_factor == 0.25
+    assert result.band_factor == 0.20
 
 
 def test_extrapolation_distance_computed_for_close_anchor():
@@ -144,9 +144,9 @@ def test_compute_confidence_from_anchors_pure():
     model = get_model("gpt-oss-20b")
     gpu = get_gpu("h100_sxm")
 
-    # With empty anchors → LOW
+    # With empty anchors → DEFAULT
     result_empty = compute_confidence_from_anchors([], model, gpu, "mxfp4", 9000, 500, 10)
-    assert result_empty.level == "low"
+    assert result_empty.level == "default"
 
     # With a synthetic anchor at matching ISL → HIGH
     fake_anchor = Anchor(
@@ -308,7 +308,7 @@ def test_confidence_upgrades_low_to_high_after_ingest(tmp_path):
 
     # Before: no anchor for gpt-oss-20b/h100_sxm → LOW
     before = compute_confidence_from_anchors([], model, gpu, "mxfp4", 9000, 500, 10)
-    assert before.level == "low"
+    assert before.level == "default"
 
     # Ingest a synthetic result for gpt-oss-20b on H100
     result = _make_result_json(
@@ -361,7 +361,7 @@ def test_impact_report_contains_before_after(tmp_path):
     combined = "\n".join(impact).lower()
     assert "before" in combined
     assert "after" in combined
-    assert "confidence" in combined or "low" in combined or "high" in combined
+    assert "confidence" in combined or "default" in combined or "high" in combined
 
 
 # ---------------------------------------------------------------------------

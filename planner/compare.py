@@ -196,12 +196,12 @@ def _generate_notes(entries: List[ComparisonEntry]) -> List[str]:
                     "replicas despite its higher $/hr."
                 )
 
-    # Warn on LOW confidence entries
-    low = [e for e in entries if e.estimate.confidence == "low"]
+    # Warn on DEFAULT confidence entries (no anchor data)
+    low = [e for e in entries if e.estimate.confidence == "default"]
     if low:
         labels = ", ".join(e.label for e in low)
         notes.append(
-            f"{labels}: LOW confidence — no benchmark anchor. "
+            f"{labels}: DEFAULT confidence — no benchmark anchor. "
             "Run POST /benchmarks/run to calibrate before committing infrastructure."
         )
 

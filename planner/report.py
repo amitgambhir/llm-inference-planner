@@ -28,8 +28,8 @@ _MODE_LABELS = {
 
 _CONF_BAND = {
     "high": "±10%",
-    "medium": "±25%",
-    "low": "±50%",
+    "medium": "±20%",
+    "default": "±25%",
 }
 
 

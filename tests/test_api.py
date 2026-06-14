@@ -176,7 +176,7 @@ def test_estimate_range_ordered(client, scenario_id):
 
 def test_estimate_confidence_valid(client, scenario_id):
     data = client.post("/estimate", json={"scenario_id": scenario_id}).json()
-    assert data["confidence"] in ("high", "medium", "low")
+    assert data["confidence"] in ("high", "medium", "default")
 
 
 def test_estimate_binding_constraint_valid(client, scenario_id):
@@ -368,7 +368,7 @@ def test_recommendation_mode_estimate_only(client, scenario_id, estimate_id):
 
 def test_recommendation_confidence_valid(client, scenario_id, estimate_id):
     data = client.get(f"/scenarios/{scenario_id}/recommendation").json()
-    assert data["confidence"] in ("high", "medium", "low")
+    assert data["confidence"] in ("high", "medium", "default")
 
 
 def test_recommendation_unknown_scenario_404(client):
@@ -396,7 +396,7 @@ def test_full_planning_workflow(client, mock_subprocess):
     # 2. Run estimate
     est = client.post("/estimate", json={"scenario_id": sid}).json()
     assert est["replicas"] >= 1
-    assert est["confidence"] in ("high", "medium", "low")
+    assert est["confidence"] in ("high", "medium", "default")
     assert "warnings" in est["payload"]
 
     # 3. Benchmark plan
@@ -426,4 +426,4 @@ def test_full_planning_workflow(client, mock_subprocess):
     rec = client.get(f"/scenarios/{sid}/recommendation").json()
     assert rec["summary"]["mode"] == "validated_by_benchmark"
     assert rec["summary"]["benchmark_runs_done"] == 1
-    assert rec["confidence"] in ("high", "medium", "low")
+    assert rec["confidence"] in ("high", "medium", "default")
