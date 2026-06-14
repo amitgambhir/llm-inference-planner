@@ -5,13 +5,13 @@ Replaces the flat GPU-catalog constants (0.40 / 0.70) with monotonic curves
 keyed on physical drivers:
 
   mfu_prefill  : (model, GPU arch, dtype, ISL)   — prefill compute utilization
-  bw_eff_decode: (GPU memory type, eff_batch, kv_ratio) — decode HBM utilization
+  bw_eff_decode: (GPU memory type, eff_batch)    — decode HBM utilization
   bw_eff_prefill: (GPU memory type)              — prefill weight-stream efficiency
 
 All forms are monotonic, bounded, and physically motivated:
   - mfu_prefill saturates at the arch+dtype "base" for large models and long ISL.
-  - bw_eff_decode increases with batch (weight amortization) and decreases with
-    kv_ratio (PagedAttention scatter). Replaces the old step-threshold 3/10 block.
+  - bw_eff_decode increases with batch (weight amortization only — KV bytes are
+    already counted once in decode_ceiling's bytes_per_step, so no kv_ratio term).
 
 Precedence in plan():
   measured anchor  >  efficiency curve  >  hard floor (0.08 / 0.20)
@@ -108,21 +108,14 @@ def mfu_prefill(
 def bw_eff_decode(
     gpu: "GpuProfile",
     eff_batch: int,
-    kv_ratio: float,
     constants: Optional[dict] = None,
 ) -> float:
-    """Bandwidth efficiency for the decode phase — absorbs batch and KV-scatter effects.
+    """Bandwidth efficiency for the decode phase — batch amortization only.
 
-    return = clamp(base × g_batch × g_kv,  low=0.20,  high=base)
+    return = clamp(base × g_batch,  low=base×batch_floor,  high=base)
 
-    Factors:
-      base    — asymptotic efficiency by GPU memory type (HBM vs GDDR)
-      g_batch — weight amortization: larger batch → better HBM utilization
-      g_kv    — scatter degradation: high KV ratio → degraded effective bandwidth
-
-    This is a smooth, differentiable replacement for the old step-threshold block
-    that applied 15%/30% penalties at kv_ratio 3/10. The optimizer in validate.fit()
-    can tune kv_scale continuously rather than jumping at fixed thresholds.
+    KV reads are counted explicitly in decode_ceiling's bytes_per_step, so no
+    kv_ratio penalty is applied here (that would double-count them).
 
     Falls back to gpu.default_bw_efficiency_decode when gpu.memory_type is absent.
     """
@@ -136,19 +129,10 @@ def bw_eff_decode(
     base: float = float(bw_base_map[memory_type])
     batch_floor: float = float(c["batch_floor"])
     batch_scale: float = float(c["batch_scale"])
-    kv_scale: float = float(c["kv_scale"])
 
-    # Weight amortization (g_batch): the batch_floor/batch_scale curve saturates very quickly
-    # for typical serving batch sizes (≥1); the main driver of per-user throughput variation
-    # is KV-cache scatter (g_kv), not weight-read amortization. batch_floor is kept in the
-    # YAML and the optimizer is constrained to keep it near 1.0.
     g_batch = batch_floor + (1.0 - batch_floor) * (1.0 - math.exp(-eff_batch / batch_scale))
-    g_kv = 1.0 / (1.0 + kv_ratio / kv_scale)
 
-    # Floor of 0.05: allows KV-dominated regimes (large ISL, high concurrency) to predict
-    # correctly. The old 0.20 floor was too high — it prevented matching measured vLLM
-    # throughput at high concurrency where effective bandwidth efficiency can drop to 5-10%.
-    return max(0.05, min(base, base * g_batch * g_kv))
+    return min(base, base * g_batch)
 
 
 # ---------------------------------------------------------------------------

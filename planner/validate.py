@@ -38,7 +38,6 @@ from typing import Optional
 import yaml
 
 from planner.catalog import (
-    DTYPE_BYTES,
     CatalogError,
     get_gpu,
     get_model,
@@ -165,12 +164,8 @@ def _predict_point(point: BenchmarkPoint, constants: Optional[dict] = None) -> f
     predict_batch = kb.max_concurrent_seqs if point.batch is None else point.batch
     avg_ctx = point.isl + point.osl // 2
 
-    weight_bytes_active = model_profile.active_params * DTYPE_BYTES.get(point.dtype, 2.0)
-    kv_bytes_inflight = model_profile.kv_bytes_per_token * avg_ctx * predict_batch
-    kv_ratio = kv_bytes_inflight / max(weight_bytes_active, 1.0)
-
     mfu_val = eff.mfu_prefill(model_profile, gpu_profile, point.dtype, point.isl, constants=constants)
-    decode_bw = eff.bw_eff_decode(gpu_profile, predict_batch, kv_ratio, constants=constants)
+    decode_bw = eff.bw_eff_decode(gpu_profile, predict_batch, constants=constants)
 
     tps_group = decode_ceiling(
         gpu_profile, model_profile, point.dtype,
@@ -278,10 +273,8 @@ PARAM_BOUNDS: list[tuple[str, float, float]] = [
     ("bw_base.gddr",          0.35, 0.80),
     # batch_floor near 1.0: g_batch ≈ 1.0 for all practical batch sizes.
     # The weight-amortization effect is already captured by the batch × step_rate structure.
-    # kv_scale range widened to allow strong KV degradation at high concurrency.
     ("batch_floor",           0.80, 1.00),
     ("batch_scale",           1.0,  64.0),
-    ("kv_scale",              0.10, 200.0),
 ]
 
 

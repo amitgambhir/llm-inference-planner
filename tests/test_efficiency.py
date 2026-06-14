@@ -129,49 +129,40 @@ def test_mfu_prefill_dtype_fallback_to_bf16():
 
 
 # ============================================================================
-# bw_eff_decode — monotonicity, bounds, and degradation
+# bw_eff_decode — monotonicity, bounds (no kv_ratio — KV counted in decode_ceiling)
 # ============================================================================
 
 
 def test_bw_eff_decode_increases_with_batch():
     """Larger batch → better weight amortization → higher bandwidth efficiency."""
     gpu = get_gpu("h100_sxm")
-    eff_small = bw_eff_decode(gpu, eff_batch=1, kv_ratio=0.5)
-    eff_large = bw_eff_decode(gpu, eff_batch=64, kv_ratio=0.5)
+    eff_small = bw_eff_decode(gpu, eff_batch=1)
+    eff_large = bw_eff_decode(gpu, eff_batch=64)
     assert eff_large > eff_small, (
         f"bw_eff should increase with batch: {eff_small:.3f} → {eff_large:.3f}"
-    )
-
-
-def test_bw_eff_decode_decreases_with_kv_ratio():
-    """Higher kv_ratio → more KV scatter → lower effective bandwidth."""
-    gpu = get_gpu("h100_sxm")
-    eff_low_kv = bw_eff_decode(gpu, eff_batch=32, kv_ratio=0.5)
-    eff_high_kv = bw_eff_decode(gpu, eff_batch=32, kv_ratio=15.0)
-    assert eff_high_kv < eff_low_kv, (
-        f"bw_eff should decrease with kv_ratio: {eff_low_kv:.3f} → {eff_high_kv:.3f}"
     )
 
 
 def test_bw_eff_decode_custom_gpu_fallback():
     """Custom GPU without memory_type → falls back to gpu.default_bw_efficiency_decode."""
     gpu = resolve_gpu(_CUSTOM_GPU_SPEC)
-    result = bw_eff_decode(gpu, eff_batch=32, kv_ratio=1.0)
+    result = bw_eff_decode(gpu, eff_batch=32)
     assert result == pytest.approx(0.68), (
         f"Expected fallback to default_bw_efficiency_decode=0.68, got {result:.3f}"
     )
 
 
-def test_bw_eff_decode_lower_bounded():
-    """bw_eff_decode must never fall below the hard floor (0.05).
-
-    The floor was lowered from 0.20 to 0.05 to allow KV-dominated regimes
-    (large ISL, high concurrency) to predict correctly — measured vLLM
-    throughput at high concurrency can require effective bw_eff ≈ 5-10%.
-    """
+def test_bw_eff_decode_lower_bounded_by_batch_floor():
+    """bw_eff_decode at batch=1 must be ≥ base × batch_floor (no hard floor needed)."""
+    from planner.efficiency import _load_constants
     gpu = get_gpu("h100_sxm")
-    result = bw_eff_decode(gpu, eff_batch=1, kv_ratio=1000.0)
-    assert result >= 0.05, f"bw_eff below hard floor: {result:.4f}"
+    c = _load_constants()
+    base = c["bw_base"]["hbm"]
+    batch_floor = c["batch_floor"]
+    result = bw_eff_decode(gpu, eff_batch=1)
+    assert result >= base * batch_floor - 1e-9, (
+        f"bw_eff {result:.4f} below base*batch_floor {base*batch_floor:.4f}"
+    )
 
 
 def test_bw_eff_decode_upper_bounded_by_base():
@@ -180,8 +171,7 @@ def test_bw_eff_decode_upper_bounded_by_base():
     gpu = get_gpu("h100_sxm")
     c = _load_constants()
     base = c["bw_base"]["hbm"]
-    # Very large batch, zero kv_ratio → approaches base
-    result = bw_eff_decode(gpu, eff_batch=10000, kv_ratio=0.0)
+    result = bw_eff_decode(gpu, eff_batch=10000)
     assert result <= base + 1e-9, f"bw_eff {result:.4f} exceeds base {base:.4f}"
 
 
@@ -189,8 +179,8 @@ def test_bw_eff_decode_gddr_lower_than_hbm():
     """GDDR GPU should achieve lower base bw_eff than HBM GPU at equivalent conditions."""
     hbm_gpu = get_gpu("h100_sxm")
     gddr_gpu = get_gpu("l4")
-    eff_hbm = bw_eff_decode(hbm_gpu, eff_batch=64, kv_ratio=1.0)
-    eff_gddr = bw_eff_decode(gddr_gpu, eff_batch=64, kv_ratio=1.0)
+    eff_hbm = bw_eff_decode(hbm_gpu, eff_batch=64)
+    eff_gddr = bw_eff_decode(gddr_gpu, eff_batch=64)
     assert eff_gddr < eff_hbm, (
         f"GDDR should have lower bw_eff than HBM: {eff_gddr:.3f} vs {eff_hbm:.3f}"
     )
