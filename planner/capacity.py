@@ -118,6 +118,7 @@ class CapacityEstimate:
     bw_eff_used: float = 0.0
     decode_bw_eff_used: float = 0.0   # after KV-ratio adjustment
     anchor_matched: bool = False
+    tp_used: int = 1                  # tensor parallel degree used
     # Throughput-centric metrics
     total_gpus: int = 0               # replicas × tp (true fleet size)
     tpot_ms: float = 0.0              # decode inter-token latency per request at eff_batch
@@ -165,9 +166,13 @@ def kv_budget(
     tp: int = 1,
 ) -> KvBudget:
     kv_bpt = model.kv_bytes_per_token
-    # With TP each GPU holds 1/tp of the weights; KV is also sharded so the
-    # effective KV budget scales by tp (each GPU contributes its free memory).
-    weights_bytes = model.total_params * DTYPE_BYTES.get(dtype, 2.0) / tp
+    # Use resident_weights_gb when available — accounts for mixed-precision checkpoints
+    # (e.g. MoE with 4-bit experts + bf16 attention/norm layers) where a flat dtype
+    # multiplied by total_params materially underestimates real memory footprint.
+    if model.resident_weights_gb is not None:
+        weights_bytes = model.resident_weights_gb * 1e9 / tp
+    else:
+        weights_bytes = model.total_params * DTYPE_BYTES.get(dtype, 2.0) / tp
     usable_mem = gpu.mem_gb * 1e9 * gpu_mem_util
 
     if weights_bytes > usable_mem:
@@ -179,7 +184,11 @@ def kv_budget(
             "Use a larger tp or a GPU with more VRAM."
         )
 
-    kv_cache_budget = (usable_mem - weights_bytes - FIXED_OVERHEAD_BYTES) * tp
+    # KV cache shards across min(tp, num_kv_heads) ranks.  When tp > num_kv_heads
+    # (e.g. tp=8, Qwen3-30B with 4 KV heads) excess ranks replicate KV rather than
+    # extending the budget — capping kv_shard_factor prevents over-counting.
+    kv_shard_factor = min(tp, model.num_kv_heads)
+    kv_cache_budget = (usable_mem - weights_bytes - FIXED_OVERHEAD_BYTES) * kv_shard_factor
     if kv_cache_budget <= 0:
         raise CatalogError(
             f"No KV cache budget after model weights + fixed overhead for "
@@ -228,9 +237,13 @@ def prefill_ceiling(
 
     Both ceilings include the TP multiplier (TP group has N× compute and N× bandwidth).
     """
+    # Attention O(n²d) term uses the Q-projection dimension, not d_model.
+    # For standard models num_q_heads × head_dim == d_model, but for GQA-heavy
+    # or atypical architectures (e.g. Qwen3: d_model=2048, Q-dim=4096) they differ.
+    q_proj_dim = model.num_q_heads * model.head_dim
     flops_per_token = (
         2 * model.active_params
-        + 2 * model.num_layers * isl * model.d_model
+        + 2 * model.num_layers * isl * q_proj_dim
     )
     # Compute-bound: FLOPs limited (TP group has tp × peak_flops)
     compute_tps = gpu.peak_flops.get(dtype) * 1e12 * mfu * tp / flops_per_token
@@ -256,19 +269,48 @@ def decode_ceiling(
     avg_ctx: int,
     bw_eff: float,
     tp: int = 1,
+    mfu: Optional[float] = None,
 ) -> float:
     """Return decode throughput in tokens/sec for the TP group at the given batch + bw_eff.
 
     Weight reads amortize over the batch; KV reads do NOT (each seq reads its own cache).
     With TP=N each GPU reads 1/N of weights and 1/N of KV, but N GPUs run in
     parallel — net effect: throughput scales linearly with tp.
+
+    MoE expert coverage: at large batch, tokens scatter to different experts and the
+    union of experts streamed per step approaches total expert params.  Uses a
+    birthday-problem fraction: distinct_frac(B) = 1 − (1 − k/n)^B.
+
+    Compute ceiling: rarely binds (decode is almost always bandwidth-bound), but
+    applies at very large batch on small models where GEMM FLOPs saturate before HBM.
     """
     achievable_bw = gpu.hbm_bandwidth_gbps * 1e9 * bw_eff
+    dtype_bytes = DTYPE_BYTES.get(dtype, 2.0)
+
+    # Decode weight bytes per step: for MoE, different sequences route to different
+    # experts.  At batch B the expected fraction of the expert pool streamed is
+    # 1 − (1 − experts_per_token/num_experts)^B (birthday problem).
+    if model.is_moe and model.num_experts and model.experts_per_token:
+        r = model.experts_per_token / model.num_experts
+        distinct_frac = 1.0 - (1.0 - r) ** batch
+        # Derive dense (non-expert) params: solve active = dense + r × total
+        dense_params = (model.active_params - r * model.total_params) / (1.0 - r)
+        expert_pool_params = model.total_params - dense_params
+        weight_bytes_step = (dense_params + distinct_frac * expert_pool_params) * dtype_bytes
+    else:
+        weight_bytes_step = model.active_params * dtype_bytes
+
     bytes_per_step = (
-        model.active_params * DTYPE_BYTES.get(dtype, 2.0) / tp
+        weight_bytes_step / tp
         + batch * model.kv_bytes_per_token * avg_ctx / tp
     )
-    return batch * achievable_bw / bytes_per_step
+    bw_tps = batch * achievable_bw / bytes_per_step
+
+    # Compute ceiling: FLOPs/step = 2 × active_params × batch; batch cancels in TPS.
+    _mfu = mfu if mfu is not None else gpu.default_mfu_prefill
+    compute_tps = gpu.peak_flops.get(dtype) * 1e12 * _mfu * tp / (2 * model.active_params)
+
+    return min(bw_tps, compute_tps)
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +386,7 @@ def size_replicas(
     traffic_class: str,
     isl: int,
     osl: int,
+    eff_batch: Optional[int] = None,
 ) -> dict:
     """Compute replica count from three independent constraints.
 
@@ -362,9 +405,11 @@ def size_replicas(
 
     # Little's Law: E[concurrent requests] = λ * E[latency]
     # Rough latency: compute-only TTFT (no queue) + osl * ITL
-    # ITL = step_time = max_concurrent_seqs / decode_tps_gpu (both TP-group scale)
+    # ITL = step_time at the effective batch (consistent with how decode_tps_gpu was computed).
+    # Using max_concurrent_seqs here would inflate ITL by 1/batch_efficiency ≈ 1.43×.
+    _eff_batch = eff_batch if eff_batch is not None else max(1, int(max_concurrent_seqs * 0.70))
     ttft_rough_s = isl / per_replica_prefill
-    itl_s = max_concurrent_seqs / decode_tps_gpu
+    itl_s = _eff_batch / decode_tps_gpu
     avg_latency_s = ttft_rough_s + osl * itl_s
     peak_concurrent_req = traffic.peak_rps * avg_latency_s
     replicas_concurrency = math.ceil(peak_concurrent_req / max_concurrent_seqs)
@@ -422,6 +467,13 @@ def plan(
     warnings: list[str] = []
     assumptions: list[str] = []
 
+    # ── 0. Upfront validation ─────────────────────────────────────────────
+    if dtype not in DTYPE_BYTES:
+        raise CatalogError(
+            f"Unknown dtype '{dtype}'. Supported: {list(DTYPE_BYTES.keys())}"
+        )
+    gpu.peak_flops.get(dtype)   # raises CatalogError early if GPU doesn't support this dtype
+
     # ── 1. Traffic ────────────────────────────────────────────────────────
     traffic = normalize_traffic(requests_per_day, peak_multiplier, isl, osl)
 
@@ -455,10 +507,10 @@ def plan(
     else:
         decode_bw_eff = bw_eff                       # weight-dominant (short context or small batch)
 
-    decode_tps = decode_ceiling(gpu, model, dtype, eff_batch, avg_ctx, decode_bw_eff, tp)
+    decode_tps = decode_ceiling(gpu, model, dtype, eff_batch, avg_ctx, decode_bw_eff, tp, mfu=mfu)
 
     # ── 5. Sizing ─────────────────────────────────────────────────────────
-    sz = size_replicas(traffic, pfill_tps, decode_tps, kv.max_concurrent_seqs, tp, traffic_class, isl, osl)
+    sz = size_replicas(traffic, pfill_tps, decode_tps, kv.max_concurrent_seqs, tp, traffic_class, isl, osl, eff_batch=eff_batch)
 
     # ── 6. Range widening by confidence ───────────────────────────────────
     band = conf.band_factor
@@ -537,6 +589,7 @@ def plan(
         bw_eff_used=bw_eff,
         decode_bw_eff_used=decode_bw_eff,
         anchor_matched=conf.anchor_matched,
+        tp_used=tp,
         total_gpus=sz["replicas"] * tp,
         tpot_ms=(eff_batch / decode_tps) * 1000.0 if decode_tps > 0 else 0.0,
         eff_batch_used=eff_batch,
@@ -567,7 +620,7 @@ def render(est: CapacityEstimate, model: ModelProfile, gpu: GpuProfile) -> str:
         "╔══════════════════════════════════════════════════════════╗",
         "║           LLM Inference Capacity Estimate                ║",
         "╚══════════════════════════════════════════════════════════╝",
-        f"  Model : {model.display_name}  |  GPU: {gpu.display_name}  |  tp={est.replicas * 0 + 1}",
+        f"  Model : {model.display_name}  |  GPU: {gpu.display_name}  |  tp={est.tp_used}",
         "",
         "── Traffic ─────────────────────────────────────────────────",
         f"  Avg RPS       : {t.avg_rps:,.1f}",

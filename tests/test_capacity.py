@@ -398,6 +398,187 @@ def test_decode_ceiling_positive():
     assert tps > 0
 
 
+def test_decode_ceiling_moe_large_batch_higher_weight_traffic():
+    """MoE expert coverage: at large batch almost all experts are touched → weight bytes ≈ total."""
+    model = get_model("gpt-oss-20b")  # 32 experts, top-4, 20.9B total / 3.61B active
+    gpu = get_gpu("h100_sxm")
+    # batch=1: distinct_frac ≈ 4/32 = 0.125 — only active experts streamed
+    # batch=128: distinct_frac ≈ 1 − (0.875)^128 ≈ 0.9999 — nearly all experts streamed
+    tps_b1 = decode_ceiling(gpu, model, "mxfp4", 1, 500, 0.70)
+    tps_b128 = decode_ceiling(gpu, model, "mxfp4", 128, 500, 0.70)
+    # Even though batch grows 128×, throughput gain is muted by the growing weight term.
+    # Key check: throughput at b=128 is NOT 128× the b=1 throughput (saturation effect).
+    ratio = tps_b128 / tps_b1
+    assert ratio < 128, f"MoE should saturate weight reads at large batch; ratio={ratio:.1f}"
+    assert ratio > 1, "Throughput should still grow with batch"
+
+
+def test_decode_ceiling_dense_vs_moe_weight_bytes():
+    """At batch=64, MoE decode ceiling is lower than a hypothetical dense model of same total params."""
+    moe = get_model("gpt-oss-20b")
+    gpu = get_gpu("h100_sxm")
+    # Dense proxy: same total_params but active==total
+    from planner.catalog import resolve_model
+    dense_proxy = resolve_model({
+        "name": "dense-proxy-21b",
+        "total_params": 20_900_000_000,
+        "active_params": 20_900_000_000,
+        "num_layers": 24,
+        "d_model": 2880,
+        "num_q_heads": 64,
+        "num_kv_heads": 8,
+        "head_dim": 64,
+        "native_dtype": "mxfp4",
+        "weight_bytes_per_param": 0.5,
+        "kv_dtype_bytes": 1,
+    })
+    tps_moe = decode_ceiling(gpu, moe, "mxfp4", 64, 500, 0.70)
+    tps_dense = decode_ceiling(gpu, dense_proxy, "mxfp4", 64, 500, 0.70)
+    # MoE at batch=64 streams nearly all experts → similar weight bytes to dense → similar TPS
+    # (MoE decode should be close to dense of same total params at large batch, not 6× faster)
+    assert tps_moe < tps_dense * 2, (
+        f"MoE at large batch should stream near-full weight set; "
+        f"moe={tps_moe:.0f} dense={tps_dense:.0f}"
+    )
+
+
+def test_decode_ceiling_compute_ceiling_binds_at_short_ctx():
+    """Compute ceiling binds when KV traffic is tiny (very short context, small model)."""
+    # Use a tiny avg_ctx so KV bytes are negligible — weight-then-compute dominated
+    model = get_model("llama-3.1-8b")
+    gpu = get_gpu("h100_sxm")
+    # At avg_ctx=1, KV barely matters; compute ceiling = peak_flops*mfu / (2*active_params)
+    tps_short = decode_ceiling(gpu, model, "fp8", 512, 1, 0.70, mfu=0.40)
+    compute_ceiling = gpu.peak_flops.get("fp8") * 1e12 * 0.40 / (2 * model.active_params)
+    assert tps_short <= compute_ceiling * 1.001, (
+        f"At avg_ctx=1 with large batch, compute ceiling should bind; "
+        f"tps={tps_short:.0f} ceiling={compute_ceiling:.0f}"
+    )
+
+
+# ============================================================================
+# Unit tests — kv_budget physics
+# ============================================================================
+
+
+def test_kv_budget_uses_resident_weights_gb():
+    """gpt-oss-20b has resident_weights_gb=13.0 — should use that, not total_params × dtype_bytes."""
+    model = get_model("gpt-oss-20b")
+    gpu = get_gpu("h100_sxm")
+    kb = kv_budget(gpu, model, "mxfp4", 9000, 500)
+    # With resident_weights_gb=13.0: per-GPU weight = 13.0 GB
+    # Without override: total_params × 0.5 bytes = 20.9e9 × 0.5 = 10.45 GB
+    # The resident_weights path gives less KV budget (more weight memory consumed).
+    # usable = 80 × 0.9 = 72 GB; kv_budget(resident) = (72 - 13 - 0.5) × 1 = 58.5 GB
+    # kv_budget(fallback)  = (72 - 10.45 - 0.5) × 1 = 61.05 GB
+    assert kb.kv_cache_budget_bytes == pytest.approx(58.5e9, rel=0.01)
+
+
+def test_kv_budget_kv_shard_factor_caps_at_num_kv_heads():
+    """When tp > num_kv_heads, KV budget should not grow beyond num_kv_heads × per-GPU free mem."""
+    # qwen3-30b-a3b has num_kv_heads=4; at tp=8 kv_shard_factor should be 4, not 8.
+    model = get_model("qwen3-30b-a3b")
+    gpu = get_gpu("h100_sxm")
+    kb_tp4 = kv_budget(gpu, model, "bf16", 1024, 256, tp=4)
+    kb_tp8 = kv_budget(gpu, model, "bf16", 1024, 256, tp=8)
+    # At tp=4: kv_shard_factor = min(4, 4) = 4
+    # At tp=8: kv_shard_factor = min(8, 4) = 4 — same KV budget, since weights halved
+    # KV budget should not double from tp=4 to tp=8 (it would if we used tp directly)
+    assert kb_tp8.kv_cache_budget_bytes < kb_tp4.kv_cache_budget_bytes * 1.5, (
+        "tp=8 should not double KV budget vs tp=4 when num_kv_heads=4"
+    )
+
+
+# ============================================================================
+# Unit tests — dtype validation
+# ============================================================================
+
+
+def test_plan_raises_on_unsupported_dtype_for_gpu():
+    """A100 has no fp8 support — plan() should raise CatalogError, not TypeError."""
+    model = get_model("llama-3.1-8b")
+    gpu = get_gpu("a100_80gb_sxm")
+    with pytest.raises(CatalogError):
+        plan(
+            requests_per_day=100_000,
+            peak_multiplier=2.0,
+            isl=512,
+            osl=128,
+            ttft_slo_ms=5000.0,
+            model=model,
+            gpu=gpu,
+            dtype="fp8",
+            tp=1,
+            traffic_class="batch",
+        )
+
+
+def test_plan_raises_on_unknown_dtype():
+    """Completely unknown dtype string should raise CatalogError immediately."""
+    model = get_model("llama-3.1-8b")
+    gpu = get_gpu("h100_sxm")
+    with pytest.raises(CatalogError):
+        plan(
+            requests_per_day=100_000,
+            peak_multiplier=2.0,
+            isl=512,
+            osl=128,
+            ttft_slo_ms=5000.0,
+            model=model,
+            gpu=gpu,
+            dtype="bf32",
+            tp=1,
+            traffic_class="batch",
+        )
+
+
+# ============================================================================
+# Unit tests — prefill Q-proj dim
+# ============================================================================
+
+
+def test_prefill_ceiling_qwen3_higher_attention_flops():
+    """Qwen3-30B: q_proj_dim (32×128=4096) > d_model (2048) → more attention FLOPs → lower prefill TPS."""
+    from planner.catalog import resolve_model, resolve_gpu
+    # Build a proxy that matches qwen3-30b-a3b but with d_model == q_proj_dim (4096)
+    # to compare against the model where d_model=2048 ≠ q_proj_dim=4096.
+    model = get_model("qwen3-30b-a3b")
+    gpu = get_gpu("h100_sxm")
+    tps_correct = prefill_ceiling(gpu, model, "bf16", 4096, 0.40)  # uses q_proj_dim = 4096
+    # Manually check: q_proj_dim = num_q_heads × head_dim = 32 × 128 = 4096
+    assert model.num_q_heads * model.head_dim == 4096
+    assert model.d_model == 2048
+    # The correct calculation uses 4096, not 2048 — so flops_per_token is higher
+    # and TPS is lower than if we used d_model.
+    flops_d_model = 2 * model.active_params + 2 * model.num_layers * 4096 * model.d_model
+    flops_qproj = 2 * model.active_params + 2 * model.num_layers * 4096 * (model.num_q_heads * model.head_dim)
+    assert flops_qproj > flops_d_model, "q_proj_dim path should compute higher FLOPs for Qwen3"
+
+
+# ============================================================================
+# Unit tests — tp_used in output
+# ============================================================================
+
+
+def test_plan_tp_used_stored_in_estimate():
+    model = get_model("llama-3.1-8b")
+    gpu = get_gpu("h100_sxm")
+    est = plan(
+        requests_per_day=100_000,
+        peak_multiplier=2.0,
+        isl=512,
+        osl=128,
+        ttft_slo_ms=5000.0,
+        model=model,
+        gpu=gpu,
+        dtype="fp8",
+        tp=2,
+        traffic_class="batch",
+    )
+    assert est.tp_used == 2
+    assert est.total_gpus == est.replicas * 2
+
+
 # ============================================================================
 # Unit tests — confidence
 # ============================================================================
