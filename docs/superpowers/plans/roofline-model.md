@@ -7,6 +7,50 @@ having to read Python.
 
 ---
 
+## TLDR — The approach in plain language
+
+### The core insight: two phases, two bottlenecks
+
+LLM inference is not a single workload. It has two fundamentally different phases, and they saturate completely different parts of the hardware:
+
+- **Prefill** processes all the input tokens at once. This is an enormous matrix multiplication — the kind that fills tensor cores. Throughput here is limited by **peak FLOPS**, not memory. More FLOPS → faster prefill.
+- **Decode** generates one output token per request per step. The weight matrices are the same size as in prefill, but the batch of *new* activations is tiny — often just one token. There is almost no arithmetic to amortize the cost of loading those weights. Throughput here is limited by **HBM memory bandwidth**, not FLOPS. More bandwidth → faster decode.
+
+Sizing a deployment with a single throughput number ignores this split. A workload with very long inputs (ISL >> OSL) needs far more compute headroom; a high-throughput generation workload (many concurrent long outputs) needs far more memory bandwidth. Treating them the same leads to systematic over- or under-provisioning.
+
+### Why roofline, not utilization guessing
+
+The roofline model (originally from HPC) asks a simpler question: *what is the theoretical maximum throughput this hardware can deliver for this workload?* Given peak FLOPS and peak HBM bandwidth, you can compute a hard ceiling for each phase — before you know anything about software efficiency. Actual throughput will be some fraction of that ceiling, but it can never exceed it.
+
+This is more principled than starting with an assumed GPU utilization (e.g. "assume 60% utilization") which has no physical grounding and is usually wrong in both directions depending on workload shape.
+
+### Calibrated efficiency, not flat constants
+
+The gap between hardware ceiling and measured throughput is real, but it is *predictable*. Rather than applying a flat MFU constant from the GPU catalog, the planner uses regime-aware efficiency curves:
+
+- **Prefill MFU** rises with model size (larger GEMMs keep tensor cores fed) and with input length (longer sequences amortize the fixed cost of loading weights). MoE models take a penalty for routing overhead and expert load imbalance.
+- **Decode bandwidth efficiency** rises with batch size (more sequences amortize the weight read across more work).
+
+These curves are fitted against citable public benchmark points — not invented. When you have a real measurement from your own hardware (a calibration anchor), that overrides everything. Confidence tiers express how much of the estimate rests on measurement versus inference:
+
+| Tier | Source | Replica range |
+|---|---|---|
+| HIGH | Anchor from your GPU, near-ISL match | ±10% |
+| MEDIUM | Anchor on same model, different hardware or ISL | ±20% |
+| DEFAULT | Efficiency curves only, no measurement | ±25% |
+
+### Three constraints, take the max
+
+Once the per-GPU ceilings are known, replica count is determined by whichever of three independent constraints binds first:
+
+1. **Prefill-driven** — how many replicas are needed to absorb the peak input token rate?
+2. **Decode-driven** — how many replicas are needed to sustain the peak output token rate?
+3. **KV-memory (concurrency)-driven** — each replica can hold only so many sequences in its KV cache simultaneously. Little's Law converts peak RPS and average request latency into a required concurrency, and that caps how many replicas are needed for this reason alone.
+
+The binding constraint is reported explicitly so you know *why* you need the replicas you need. A headroom factor (40% for realtime traffic, 10% for batch) is applied on top for traffic spikes and rolling restarts.
+
+---
+
 ## Inputs
 
 | Source | What it provides |
@@ -17,7 +61,7 @@ having to read Python.
 | `catalog/benchmarks_public.yaml` | citable public benchmark points (MLPerf, vendor perf overviews); used by `validate.fit()` to tune efficiency_constants.yaml; schema_version 2 with fit_role field |
 | `planner/efficiency_constants.yaml` | MFU base values by GPU arch + dtype, bandwidth efficiency base by memory type, model-size saturation constants (size_floor, size_scale), ISL saturation constants (isl_floor, isl_scale), MoE factor, engine_factor per serving engine (vllm=1.0 reference, trtllm=~1.3) |
 | `catalog/runtimes.yaml` | Runtime engine profiles (vLLM, TRT-LLM, SGLang, managed); reference engine designation; engine_factor (relative to vLLM=1.0) |
-| Scenario / CLI | requests_per_day, peak_multiplier, ISL, OSL, TTFT SLO, dtype, tp, traffic_class, gpu_mem_util |
+| Scenario / CLI | requests_per_day (or avg_rps or users×prompts — resolved by `planner/intake.py` before `plan()` is called), peak_multiplier, ISL, OSL, TTFT SLO, dtype, tp, traffic_class, gpu_mem_util; optional: users (cross-cutting, unlocks $/user/month) |
 
 **Dtype byte widths used throughout:**
 
@@ -39,6 +83,22 @@ kv_bytes_per_token = 2 × num_layers × num_kv_heads × head_dim × kv_dtype_byt
 
 The factor of 2 is the K and V tensors. `kv_dtype_bytes` defaults to 1 (fp8
 KV cache is vLLM's default for H100).
+
+---
+
+## Pre-stage — Demand resolution (`planner/intake.py`)
+
+Before `plan()` is called, `resolve_demand(DemandSpec)` converts one of three input modes into a single `requests_per_day` value:
+
+| Mode | Input fields | Conversion |
+|---|---|---|
+| Direct | `requests_per_day` | passthrough |
+| RPS | `avg_rps` | `avg_rps × 86,400` |
+| User-based | `users`, `prompts_per_user_per_day` | `users × prompts_per_user_per_day` |
+
+Precedence when multiple modes are supplied: `requests_per_day` → `avg_rps` → `users × prompts`. A `warnings.warn` is emitted if two sources diverge by more than 20%. Zero sources → `WorkloadError`.
+
+`users` is a cross-cutting optional — it is carried through to `CapacityEstimate.users` unchanged and never enters the roofline math. It unlocks `CostVariant.cost_per_user_per_month` in `cost.py`.
 
 ---
 
@@ -402,7 +462,7 @@ replicas      = ceil(base_replicas × headroom_factor)
 | mixed | 1.25× | |
 | batch | 1.10× | Batch jobs tolerate short queuing |
 
-The field `binding_constraint` names which of the three constraints set `base_replicas`.
+The fields `binding_constraint` and `headroom_factor` are both stored on `CapacityEstimate` (the latter for use by `render_napkin_math`).
 
 ### Total GPUs
 
@@ -682,6 +742,29 @@ the efficiency curve output even at HIGH confidence. This is a known gap.
 
 This is the intended workflow: estimate first (DEFAULT), benchmark, ingest,
 re-estimate (HIGH).
+
+---
+
+## Post-stage — Napkin-math explainer (`planner/explain.py`)
+
+`render_napkin_math(est: CapacityEstimate, cost: CostEstimate | None = None) -> str`
+walks the full sizing chain in plain language. Every number is read from the
+estimate — no hardcoded constants.
+
+**Six sections (cost section omitted when `cost=None`):**
+
+| Section | What it shows |
+|---|---|
+| 1. Traffic normalisation | `req/day ÷ 86,400 = avg RPS × peak_mult = peak RPS` |
+| 2. Token demand | `× ISL = input tok/s (prefill)` and `× OSL = output tok/s (decode)` |
+| 3. Per-replica ceilings | `prefill_tps_gpu` at `mfu_used`; `decode_tps_gpu` at `bw_eff_used` |
+| 4. KV-budget concurrency | `gpu_mem_gb − weights_gb = kv_gb ÷ kv_per_seq_kb = max_concurrent_seqs` |
+| 5. Replica sizing | prefill/decode/concurrency driven counts → binding constraint → `× headroom_factor → replicas` |
+| 6. Cost (optional) | `replicas × tp × 24h × $/hr = $/day → $/month`; `$/user/month` when `est.users` is set |
+
+**Fields read from `CapacityEstimate`:** `traffic.*`, `kv_budget.*`, `prefill_tps_gpu`, `decode_tps_gpu`, `mfu_used`, `bw_eff_used`, `replicas_prefill`, `replicas_decode`, `replicas_concurrency`, `binding_constraint`, `headroom_factor`, `gpu_mem_gb`, `tp_used`, `replicas`, `users`.
+
+`render_napkin_math` is called automatically by `render_report(..., include_napkin_math=True)` (appends `## How we got here`) and directly by `planner/capacity.py` CLI when `--explain` is passed.
 
 ---
 

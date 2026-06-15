@@ -125,6 +125,10 @@ class CapacityEstimate:
     tpot_ms: float = 0.0              # decode inter-token latency per request at eff_batch
     eff_batch_used: int = 0           # batch_efficiency × max_concurrent_seqs
     kv_ratio: float = 0.0             # kv_bytes / weight_bytes at eff_batch (decode regime indicator)
+    # Demand / user context (never enters physics/sizing)
+    users: Optional[int] = None       # total user base (from intake layer)
+    gpu_mem_gb: float = 0.0           # GPU VRAM in GB (for explainer)
+    headroom_factor: float = 0.0      # traffic-class headroom multiplier (for explainer)
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +460,7 @@ def plan(
     gpu_mem_util: float = 0.90,
     runtime: str = "vllm",
     batch_efficiency: float = 0.70,
+    users: Optional[int] = None,
 ) -> CapacityEstimate:
     """Full planning pipeline.  Returns a CapacityEstimate with range + confidence.
 
@@ -624,6 +629,9 @@ def plan(
         tpot_ms=(eff_batch / decode_tps) * 1000.0 if decode_tps > 0 else 0.0,
         eff_batch_used=eff_batch,
         kv_ratio=kv_ratio,
+        users=users,
+        gpu_mem_gb=gpu.mem_gb,
+        headroom_factor=sz["headroom_factor"],
     )
 
 
@@ -710,7 +718,14 @@ def _build_parser() -> argparse.ArgumentParser:
         description="LLM Inference Capacity Planner — roofline sizing with confidence labels",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--requests-per-day", type=float, required=True)
+    p.add_argument("--requests-per-day", type=float, default=None)
+    p.add_argument("--avg-rps", type=float, default=None,
+                   help="Average requests/sec (converted to req/day internally)")
+    p.add_argument("--users", type=int, default=None,
+                   help="Total user base (unlocks $/user/month in any demand mode)")
+    p.add_argument("--prompts-per-user-per-day", type=float, default=None,
+                   metavar="PROMPTS",
+                   help="Prompts per user per day (requires --users)")
     p.add_argument("--peak-multiplier", type=float, default=3.0)
     p.add_argument("--isl", type=int, required=True, help="Input sequence length (tokens)")
     p.add_argument("--osl", type=int, required=True, help="Output sequence length (tokens)")
@@ -740,6 +755,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    choices=["realtime", "mixed", "batch"])
     p.add_argument("--gpu-mem-util", type=float, default=0.90)
     p.add_argument("--json", action="store_true", help="Emit JSON instead of human output")
+    p.add_argument("--explain", action="store_true",
+                   help="Append napkin-math sizing walk to output")
     return p
 
 
@@ -771,6 +788,19 @@ def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    # Resolve demand mode before touching the catalog
+    from planner.intake import DemandSpec, WorkloadError, resolve_demand
+    try:
+        rpd, users = resolve_demand(DemandSpec(
+            requests_per_day=args.requests_per_day,
+            avg_rps=args.avg_rps,
+            users=args.users,
+            prompts_per_user_per_day=args.prompts_per_user_per_day,
+        ))
+    except WorkloadError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
     try:
         model = _resolve_model_cli(args)
         gpu = _resolve_gpu_cli(args)
@@ -780,7 +810,7 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         est = plan(
-            requests_per_day=int(args.requests_per_day),
+            requests_per_day=int(rpd),
             peak_multiplier=args.peak_multiplier,
             isl=args.isl,
             osl=args.osl,
@@ -792,6 +822,7 @@ def main(argv: list[str] | None = None) -> None:
             traffic_class=args.traffic_class,
             gpu_mem_util=args.gpu_mem_util,
             runtime=args.runtime,
+            users=users,
         )
     except CatalogError as e:
         print(f"Planning error: {e}", file=sys.stderr)
@@ -801,6 +832,16 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(asdict(est), indent=2, default=str))
     else:
         print(render(est, model, gpu))
+
+    if getattr(args, "explain", False):
+        from planner.explain import render_napkin_math
+        from planner.cost import compute_cost
+        try:
+            cost_est = compute_cost(est, gpu.name, tp=args.tp)
+        except Exception:
+            cost_est = None
+        print("\n## How we got here\n")
+        print(render_napkin_math(est, cost=cost_est))
 
 
 if __name__ == "__main__":

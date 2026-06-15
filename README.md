@@ -93,11 +93,36 @@ Size a deployment *before* you have a GPU. Given a workload description, the pla
 
 ### 3.1 CLI
 
+Three equivalent ways to specify demand — pick the one that matches how you think about your workload:
+
 ```bash
+# Option A — direct request volume
 python planner/capacity.py \
   --model llama-3.1-8b --gpu h100_sxm --dtype fp8 \
   --requests-per-day 50000 --isl 1024 --osl 256 \
   --ttft-slo-ms 500 --traffic-class realtime
+
+# Option B — average RPS
+python planner/capacity.py \
+  --model llama-3.1-8b --gpu h100_sxm --dtype fp8 \
+  --avg-rps 0.58 --isl 1024 --osl 256 \
+  --ttft-slo-ms 500 --traffic-class realtime
+
+# Option C — user base × prompts/day
+python planner/capacity.py \
+  --model llama-3.1-8b --gpu h100_sxm --dtype fp8 \
+  --users 25000 --prompts-per-user-per-day 2 --isl 1024 --osl 256 \
+  --ttft-slo-ms 500 --traffic-class realtime
+```
+
+Add `--users` to any mode to unlock `$/user/month` in the cost output. Add `--explain` to append a plain-language walk of the sizing arithmetic:
+
+```bash
+python planner/capacity.py \
+  --model llama-3.1-8b --gpu h100_sxm --dtype fp8 \
+  --avg-rps 0.58 --users 25000 --isl 1024 --osl 256 \
+  --ttft-slo-ms 500 --traffic-class realtime \
+  --explain
 ```
 
 ### 3.2 API + UI
@@ -123,8 +148,10 @@ Open [http://localhost:3000](http://localhost:3000). Four screens:
 
 | Module | Role |
 | --- | --- |
-| `planner/capacity.py` | Roofline model — prefill (compute-bound) + decode (bandwidth-bound) → replicas, TTFT, KV budget |
-| `planner/cost.py` | On-demand and 1-yr reserved cost envelope from `catalog/costs.yaml` |
+| `planner/intake.py` | Multi-mode demand resolver — accepts `requests_per_day`, `avg_rps`, or `users × prompts_per_user_per_day`; returns `(requests_per_day, users)`; raises `WorkloadError` if no source supplied |
+| `planner/capacity.py` | Roofline model — prefill (compute-bound) + decode (bandwidth-bound) → replicas, TTFT, KV budget; `plan()` accepts `users`; `CapacityEstimate` carries `users`, `gpu_mem_gb`, `headroom_factor` |
+| `planner/cost.py` | On-demand and 1-yr reserved cost envelope from `catalog/costs.yaml`; `CostVariant` includes `cost_per_user_per_month` when `users` is set |
+| `planner/explain.py` | Napkin-math explainer — `render_napkin_math(est, cost=None)` walks the sizing arithmetic in plain language; every number read from `CapacityEstimate`/`CostEstimate` |
 | `planner/benchmark_plan.py` | Ordered test matrix — ISL sweep, concurrency sweep, precision compare, KV check |
 | `planner/confidence.py` | Three-tier rubric: HIGH ±10%, MEDIUM ±20%, DEFAULT ±25%; `geometry_source="estimated"` downgrades one level |
 | `planner/efficiency.py` | Regime-aware MFU and bandwidth efficiency curves — `mfu_prefill` (size + ISL + MoE) and `bw_eff_decode` (batch amortization; KV counted once in `decode_ceiling`) |
@@ -132,7 +159,7 @@ Open [http://localhost:3000](http://localhost:3000). Four screens:
 | `planner/validate.py` | `fit()`, `report()`, `cv_leave_one_gpu_out()`, `parameter_sensitivity()`; dual-roofline per-point adapter; fit_role filtering |
 | `planner/ingest_anchor.py` | Reads a completed benchmark JSON → writes calibration anchor to `catalog/anchors.yaml` |
 | `planner/compare.py` | Multi-config comparison: cheapest, safest (confidence), best latency |
-| `planner/report.py` | Markdown report with mode badge (`estimate_only` / `partially_validated` / `validated_by_benchmark`) |
+| `planner/report.py` | Markdown report with mode badge (`estimate_only` / `partially_validated` / `validated_by_benchmark`); `include_napkin_math=True` appends "How we got here" section |
 
 ### 3.4 `api/` REST endpoints
 
@@ -239,9 +266,11 @@ llm-inference-planner/
 │   └── phase_c_refit.py            # Phase C: pin engine_factor, refit, CV, sensitivity
 │
 ├── planner/                        # Capacity planner — pure Python, no GPU needed
+│   ├── intake.py                   # Multi-mode demand resolver (requests_per_day / avg_rps / users×prompts)
 │   ├── capacity.py                 # Roofline model: prefill + decode → replicas, TTFT, KV budget
 │   ├── catalog.py                  # GPU/model catalog loader — reads gpus.yaml + models.yaml
-│   ├── cost.py                     # Cost envelope
+│   ├── cost.py                     # Cost envelope; cost_per_user_per_month when users is set
+│   ├── explain.py                  # Napkin-math explainer — render_napkin_math(est, cost=None)
 │   ├── benchmark_plan.py           # Ordered test matrix generator
 │   ├── confidence.py               # HIGH/MEDIUM/DEFAULT confidence rubric
 │   ├── efficiency.py               # Regime-aware MFU + bandwidth efficiency curves
@@ -249,7 +278,7 @@ llm-inference-planner/
 │   ├── validate.py                 # fit(), report(), CV, sensitivity; dual-roofline adapter
 │   ├── ingest_anchor.py            # Benchmark result → calibration anchor
 │   ├── compare.py                  # Multi-config comparison
-│   └── report.py                   # Markdown report with mode badge
+│   └── report.py                   # Markdown report with mode badge; --include_napkin_math
 │
 ├── api/                            # FastAPI REST layer with SQLite/Postgres persistence
 │   ├── db.py                       # SQLAlchemy 2.0 ORM
@@ -284,7 +313,7 @@ llm-inference-planner/
 │   ├── rag.jsonl                   # 15 RAG eval prompts
 │   └── long_context.jsonl          # 15 long-document analysis prompts
 │
-├── tests/                          # 314 tests
+├── tests/                          # 345 tests
 │   ├── test_capacity.py            # 55: roofline model, prefill/decode, KV budget
 │   ├── test_api.py                 # 35: FastAPI acceptance tests, isolated SQLite
 │   ├── test_ingest_anchor.py       # 29: ingest_anchor + confidence rubric
@@ -292,11 +321,13 @@ llm-inference-planner/
 │   ├── test_benchmark_plan.py      # 27: test matrix ordering, step count, priority
 │   ├── test_deployment_advisor.py  # 26: load_deployment, compute_tradeoff, recommend
 │   ├── test_report.py              # 24: mode badges, confidence bands, cost envelope
+│   ├── test_explain.py             # 17: napkin-math sections, peak_rps param, cost/user conditionals
 │   ├── test_run_eval.py            # 18: dataset loading, score normalization, sidecar
 │   ├── test_cost.py                # 18: cost envelope, on-demand vs reserved
 │   ├── test_efficiency.py          # 16: MFU + bandwidth efficiency curves
 │   ├── test_compare.py             # 19: cheapest/safest/best-latency scoring
-│   └── test_validation.py          # 18: fit, accuracy, adapter routing, CV, sensitivity
+│   ├── test_validation.py          # 18: fit, accuracy, adapter routing, CV, sensitivity
+│   └── test_intake.py              # 14: three demand modes, precedence, WorkloadError, divergence warning
 │
 ├── results/
 │   ├── real/                       # Populated by run_bench.py (gitignored)
@@ -332,7 +363,7 @@ llm-inference-planner/
 
 1. **Physics before empiricism.** New efficiency curve constants need a citable source (public benchmark, vendor perf overview, or a `fit_role: level` point in `catalog/benchmarks_public.yaml`). Ad-hoc constants get rejected.
 2. **Engine separation.** Never mix TRT-LLM throughput numbers into vLLM estimates. Use the `engine_factor` mechanism in `efficiency_constants.yaml`.
-3. **Tests first.** Run `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q` before committing. 314 tests, all must pass.
+3. **Tests first.** Run `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q` before committing. 345 tests, all must pass.
 
 ---
 

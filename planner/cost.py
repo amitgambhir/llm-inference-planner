@@ -29,6 +29,7 @@ class CostVariant:
     cost_month_usd: float
     cost_per_1m_tokens_usd: float
     cost_per_request_usd: float
+    cost_per_user_per_month: Optional[float] = None
 
 
 @dataclass
@@ -113,6 +114,7 @@ def compute_cost(
     replicas = estimate.replicas
     total_tokens_day = estimate.traffic.total_tokens_day
     requests_per_day = estimate.traffic.requests_per_day
+    users = estimate.users
 
     # Each replica occupies tp physical GPUs
     gpu_hours_day = replicas * tp * 24
@@ -122,6 +124,7 @@ def compute_cost(
         cost_month = cost_day * 30
         cost_per_1m = cost_day / (total_tokens_day / 1e6) if total_tokens_day > 0 else 0.0
         cost_per_req = cost_day / requests_per_day if requests_per_day > 0 else 0.0
+        cost_per_user = cost_month / users if users else None
         return CostVariant(
             price_usd_per_gpu_hour=rate,
             gpu_hours_day=gpu_hours_day,
@@ -129,6 +132,7 @@ def compute_cost(
             cost_month_usd=cost_month,
             cost_per_1m_tokens_usd=cost_per_1m,
             cost_per_request_usd=cost_per_req,
+            cost_per_user_per_month=cost_per_user,
         )
 
     # ── Prefill / decode split ────────────────────────────────────────────
@@ -184,12 +188,20 @@ def render_cost(cost: CostEstimate) -> str:
         f"    /month         : ${od.cost_month_usd:,.2f}",
         f"    /1M tokens     : ${od.cost_per_1m_tokens_usd:.4f}",
         f"    /request       : ${od.cost_per_request_usd:.6f}",
+    ]
+    if od.cost_per_user_per_month is not None:
+        lines.append(f"    /user/month    : ${od.cost_per_user_per_month:.2f}")
+    lines += [
         "",
         "  Reserved   (${:.2f}/GPU-hr)".format(rs.price_usd_per_gpu_hour),
         f"    /day           : ${rs.cost_day_usd:,.2f}",
         f"    /month         : ${rs.cost_month_usd:,.2f}",
         f"    /1M tokens     : ${rs.cost_per_1m_tokens_usd:.4f}",
         f"    /request       : ${rs.cost_per_request_usd:.6f}",
+    ]
+    if rs.cost_per_user_per_month is not None:
+        lines.append(f"    /user/month    : ${rs.cost_per_user_per_month:.2f}")
+    lines += [
         "",
         "  Cost split (on-demand, by replica driver)",
         f"    Prefill-driven : {bd.prefill_fraction:.0%}  (${bd.prefill_cost_day_usd:,.2f}/day)",

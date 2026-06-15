@@ -18,7 +18,7 @@ A globally installed pytest plugin tries to bind a socket in this environment. B
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
-314 tests across 12 files:
+345 tests across 14 files:
 
 | File | Count | What it covers |
 | --- | --- | --- |
@@ -29,11 +29,13 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | `tests/test_benchmark_plan.py` | 27 | test matrix ordering, step count, priority logic |
 | `tests/test_deployment_advisor.py` | 26 | load_deployment, compute_tradeoff, recommend, render |
 | `tests/test_report.py` | 24 | mode badges, confidence bands, cost envelope section, anchor evidence |
+| `tests/test_explain.py` | 17 | napkin-math explainer: sections, parameterised peak_rps, users/cost conditionals, report integration |
 | `tests/test_run_eval.py` | 18 | dataset loading, score normalization, metric selection, sidecar writing |
 | `tests/test_cost.py` | 18 | cost envelope, on-demand vs reserved, GPU-hour math |
 | `tests/test_efficiency.py` | 16 | mfu_prefill + bw_eff_decode curves: monotonicity, bounds, fallback |
 | `tests/test_compare.py` | 19 | cheapest/safest/best-latency scoring, H200 vs H100 note |
 | `tests/test_validation.py` | 18 | public benchmark fit, accuracy targets, adapter routing, CV, sensitivity |
+| `tests/test_intake.py` | 14 | demand resolver: three input modes, precedence, users passthrough, WorkloadError, divergence warning |
 
 ## Key files
 
@@ -50,17 +52,19 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | `catalog/runpod_phase_b.sh` | Phase B runbook — copy to RunPod 1×H100-SXM pod; runs 5 ISL/OSL offline benchmarks and streams `output_tps` per pair |
 | `catalog/compute_engine_factor.py` | Phase C helper — prints per-pair TRT-LLM/vLLM ratio table + median to paste into `efficiency_constants.yaml` |
 | `catalog/phase_c_refit.py` | Phase C automation — pins `engine_factor`, narrows `PARAM_BOUNDS`, runs full refit, prints CV + sensitivity + suggested test targets |
-| `planner/capacity.py` | Roofline model — prefill (compute-bound) + decode (bandwidth-bound) |
+| `planner/intake.py` | Multi-mode demand resolver — `DemandSpec`, `WorkloadError`, `resolve_demand()`; three input modes (requests_per_day / avg_rps / users×prompts); `users` passes through to cost layer |
+| `planner/capacity.py` | Roofline model — prefill (compute-bound) + decode (bandwidth-bound); `plan()` accepts `users`; `CapacityEstimate` carries `users`, `gpu_mem_gb`, `headroom_factor`; CLI: `--avg-rps`, `--users`, `--prompts-per-user-per-day`, `--explain` |
 | `planner/catalog.py` | GPU/model catalog loader — reads `catalog/gpus.yaml` + `catalog/models.yaml` |
-| `planner/cost.py` | Cost envelope from catalog pricing |
+| `planner/cost.py` | Cost envelope from catalog pricing; `CostVariant` carries `cost_per_user_per_month` (populated when `estimate.users` is set) |
 | `planner/benchmark_plan.py` | Ordered test matrix: ISL sweep, concurrency sweep, precision compare, KV check |
 | `planner/confidence.py` | THREE-tier rubric: HIGH (±10%), MEDIUM (±20%), DEFAULT (±25%) |
 | `planner/efficiency.py` | Regime-aware efficiency curves: `mfu_prefill` (size + ISL + MoE) and `bw_eff_decode` (batch amortization only; KV counted once in `decode_ceiling`) |
 | `planner/efficiency_constants.yaml` | Tunable constants for efficiency curves; updated by `validate.fit()` |
+| `planner/explain.py` | Napkin-math explainer — `render_napkin_math(est, cost=None)`; six sections; every number read from `CapacityEstimate`/`CostEstimate`, no hardcoded constants |
 | `planner/validate.py` | `fit()` + `report()` + `cv_leave_one_gpu_out()` + `parameter_sensitivity()`; dual-roofline per-point adapter; fit_role filtering (level+shape in fit, validate reported separately) |
 | `planner/ingest_anchor.py` | Reads benchmark JSON, writes calibration anchor to `catalog/anchors.yaml` |
 | `planner/compare.py` | Multi-config comparison: cheapest, safest, best_latency |
-| `planner/report.py` | Markdown report with mode badge |
+| `planner/report.py` | Markdown report with mode badge; `include_napkin_math: bool = False` appends "## How we got here" section |
 | `api/db.py` | SQLAlchemy 2.0 ORM: ScenarioRow, CapacityEstimateRow, BenchmarkRunRow, RecommendationRow, ReportRow |
 | `api/schemas.py` | Pydantic v2 request/response schemas |
 | `api/jobs.py` | Background benchmark subprocess runner |
@@ -79,6 +83,18 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | `results/real/` | Gitignored — populated by `run_bench.py` |
 
 ## Architecture invariants
+
+### Multi-mode demand resolver
+
+`planner/intake.py` converts three demand input modes into a single `(requests_per_day, users)` pair before the roofline runs:
+
+| Mode | Fields | Conversion |
+| --- | --- | --- |
+| Direct | `requests_per_day` | passthrough |
+| RPS | `avg_rps` | `× 86,400` |
+| User-based | `users + prompts_per_user_per_day` | `users × prompts` |
+
+Precedence: `requests_per_day` → `avg_rps` → `users × prompts`. Multiple sources accepted; a `warnings.warn` is emitted if two sources diverge >20%. No source → `WorkloadError`. `users` is a cross-cutting optional in every mode — it never enters the roofline physics but flows through to `CostVariant.cost_per_user_per_month`.
 
 ### Roofline model
 
@@ -165,6 +181,12 @@ Each quality sidecar (`results/quality/<tag>.json`) carries a `latency_tag` back
 **Basic auth credentials in the stored command.** When the UI benchmark plan page sends an endpoint URL containing `user:pass@host`, `api/main.py` strips the credentials from the URL and appends `--basic-auth user:pass` to the subprocess command. The clean URL (without credentials) is what gets stored in the `BenchmarkRunRow.command` column. `api/jobs.py` uses `shlex.split()` (not `.split()`) so passwords with special characters tokenize correctly.
 
 **mock_subprocess fixture writes fake result JSON.** `tests/test_api.py` patches `subprocess.run` in `api.jobs` to write a `FAKE_RESULT` dict (valid latency JSON) to the expected `--output-dir/<tag>.json` path before returning `CompletedProcess(returncode=0)`. This enables the full ingest → recommendation pipeline to be exercised in tests without a real GPU.
+
+**`--requests-per-day` is now optional.** Any of the three demand modes (`--requests-per-day`, `--avg-rps`, or `--users + --prompts-per-user-per-day`) satisfies the CLI. Supplying none raises `WorkloadError` before the catalog is even loaded.
+
+**`users` flows through as a passthrough field on `CapacityEstimate`.** `plan()` accepts `users: int | None = None`; it is stored on the estimate unchanged. It never enters the prefill/decode/sizing math. `compute_cost()` reads `estimate.users` to populate `CostVariant.cost_per_user_per_month`; if `users` is None, that field is None.
+
+**`render_napkin_math` reads `gpu_mem_gb` from `CapacityEstimate`, not from a `GpuProfile`.** `plan()` sets `gpu_mem_gb = gpu.mem_gb` on the estimate so the explainer is self-contained. If constructing a `CapacityEstimate` outside of `plan()` (e.g. in tests), set `gpu_mem_gb` explicitly or the KV-budget section will show `0 GB`.
 
 **bw_eff_decode has no hard floor — the natural floor is `base × batch_floor`.** The old hard floors (0.05, 0.20) are removed. KV traffic is now counted once in `decode_ceiling`'s `bytes_per_step`, so no separate `g_kv` penalty is needed in `bw_eff_decode`. The floor emerges naturally from `batch_floor` (currently ~0.80), giving `floor ≈ bw_base × 0.80`.
 

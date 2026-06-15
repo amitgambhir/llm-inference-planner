@@ -49,6 +49,7 @@ def render_report(
     anchors_used: Optional[List[str]] = None,
     mode: str = "estimate_only",
     generated_at: Optional[datetime] = None,
+    include_napkin_math: bool = False,
 ) -> str:
     """Return a Markdown report string.
 
@@ -224,6 +225,11 @@ def render_report(
             "3. Monitor live TTFT p95 against the SLO — queue heuristic may diverge "
             "under non-Poisson arrival patterns.",
         ]
+
+    if include_napkin_math:
+        from planner.explain import render_napkin_math
+        lines += ["## How we got here", ""]
+        lines += render_napkin_math(estimate, cost=cost).split("\n")
 
     lines.append("")
     lines.append(
