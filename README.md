@@ -124,7 +124,7 @@ Open [http://localhost:3000](http://localhost:3000). Four screens:
 | Module | Role |
 | --- | --- |
 | `planner/capacity.py` | Roofline model — prefill (compute-bound) + decode (bandwidth-bound) → replicas, TTFT, KV budget |
-| `planner/cost.py` | On-demand and 1-yr reserved cost envelope from `catalog/pricing.yaml` |
+| `planner/cost.py` | On-demand and 1-yr reserved cost envelope from `catalog/costs.yaml` |
 | `planner/benchmark_plan.py` | Ordered test matrix — ISL sweep, concurrency sweep, precision compare, KV check |
 | `planner/confidence.py` | Three-tier rubric: HIGH ±10%, MEDIUM ±20%, DEFAULT ±25%; `geometry_source="estimated"` downgrades one level |
 | `planner/efficiency.py` | Regime-aware MFU and bandwidth efficiency curves — `mfu_prefill` (size + ISL + MoE) and `bw_eff_decode` (batch amortization; KV counted once in `decode_ceiling`) |
@@ -156,7 +156,7 @@ FastAPI with SQLite persistence (Postgres-ready). Uses `create_app()` factory fo
 | --- | --- |
 | `catalog/gpus.yaml` | Peak FLOPS, memory bandwidth, VRAM, arch, memory_type, MFU defaults — h100_sxm, h200_sxm, a100_80gb_sxm, l40s, l4 |
 | `catalog/models.yaml` | Param counts, hidden dim, layers, KV heads — llama-3.1-8b/70b, llama-3.3-70b, llama-4-maverick, gpt-oss-20b |
-| `catalog/pricing.yaml` | On-demand + 1-yr reserved cost per GPU-hour |
+| `catalog/costs.yaml` | On-demand + 1-yr reserved cost per GPU-hour |
 | `catalog/anchors.yaml` | Measured throughput anchors written by `ingest_anchor.py` |
 | `catalog/benchmarks_public.yaml` | Public benchmark points (schema v2) — vLLM `level`, TRT-LLM `shape`, distribution `validate`, `sanity`; Phase B calibration stubs pre-staged |
 | `catalog/runtimes.yaml` | Supported engines with engine confound notes |
@@ -230,7 +230,7 @@ llm-inference-planner/
 ├── catalog/                        # GPU, model, pricing, and benchmark data
 │   ├── gpus.yaml                   # FLOPS, bandwidth, VRAM, arch, memory_type
 │   ├── models.yaml                 # Params, hidden dim, layers, KV heads
-│   ├── pricing.yaml                # On-demand + 1-yr reserved cost per GPU-hour
+│   ├── costs.yaml                  # On-demand + 1-yr reserved cost per GPU-hour
 │   ├── anchors.yaml                # Measured throughput anchors (ingest_anchor.py)
 │   ├── benchmarks_public.yaml      # Public benchmark points; level/shape/validate/sanity roles
 │   ├── runtimes.yaml               # Supported inference engines
@@ -240,6 +240,7 @@ llm-inference-planner/
 │
 ├── planner/                        # Capacity planner — pure Python, no GPU needed
 │   ├── capacity.py                 # Roofline model: prefill + decode → replicas, TTFT, KV budget
+│   ├── catalog.py                  # GPU/model catalog loader — reads gpus.yaml + models.yaml
 │   ├── cost.py                     # Cost envelope
 │   ├── benchmark_plan.py           # Ordered test matrix generator
 │   ├── confidence.py               # HIGH/MEDIUM/DEFAULT confidence rubric
