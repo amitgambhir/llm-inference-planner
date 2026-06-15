@@ -329,25 +329,34 @@ def report(
 
 # Parameter bounds for coordinate descent: (dotted_yaml_key, lo, hi)
 # Nested keys use '.' separator matching the YAML structure.
+#
+# Strategy: fix the LEVELS (tight ±10% bounds around literature priors),
+# fit the SHAPES (ISL/size/batch curves) and engine_factor freely.
+# This prevents the optimizer trading engine_factor × MFU_BASE.
+#
+# MFU priors: asymptotic large-model long-ISL MFU from published benchmarks.
+# BW priors: empirically calibrated base HBM/GDDR efficiency (current fitted values).
 PARAM_BOUNDS: list[tuple[str, float, float]] = [
-    ("mfu_base.hopper.bf16",  0.15, 0.65),
-    ("mfu_base.hopper.fp8",   0.15, 0.65),
-    ("mfu_base.hopper.mxfp4", 0.15, 0.65),
-    ("mfu_base.ampere.bf16",  0.15, 0.65),
-    ("mfu_base.ampere.fp8",   0.10, 0.55),
-    ("mfu_base.ada.bf16",     0.10, 0.55),
-    ("mfu_base.ada.fp8",      0.10, 0.55),
+    # --- Levels: tight ±10% around literature priors ---
+    ("mfu_base.hopper.bf16",  0.45, 0.55),   # prior 0.50
+    ("mfu_base.hopper.fp8",   0.43, 0.53),   # prior 0.48
+    ("mfu_base.hopper.mxfp4", 0.45, 0.55),   # prior 0.50
+    ("mfu_base.ampere.bf16",  0.45, 0.55),   # prior 0.50
+    ("mfu_base.ampere.fp8",   0.405, 0.495), # prior 0.45
+    ("mfu_base.ada.bf16",     0.405, 0.495), # prior 0.45
+    ("mfu_base.ada.fp8",      0.405, 0.495), # prior 0.45
+    ("bw_base.hbm",           0.39, 0.49),   # prior 0.44 (empirically fitted)
+    ("bw_base.gddr",          0.34, 0.42),   # prior 0.38 (empirically fitted)
+    # --- Shapes: free within physically meaningful ranges ---
     ("size_floor",            0.20, 0.90),
     ("size_scale",            1e9,  100e9),
     ("isl_floor",             0.20, 0.90),
     ("isl_scale",             64.0, 8192.0),
     ("moe_factor",            0.60, 1.00),
-    ("bw_base.hbm",           0.40, 0.90),
-    ("bw_base.gddr",          0.35, 0.80),
-    # batch_floor near 1.0: g_batch ≈ 1.0 for all practical batch sizes.
-    # The weight-amortization effect is already captured by the batch × step_rate structure.
     ("batch_floor",           0.80, 1.00),
     ("batch_scale",           1.0,  64.0),
+    # --- Engine factor: vllm=1.0 fixed; only trtllm is free ---
+    ("engine_factor.trtllm",  1.00, 3.00),
 ]
 
 
@@ -384,19 +393,25 @@ def fit(
     Tunes efficiency_constants.yaml and writes back the fitted values so that
     subsequent report() calls and the pytest suite use calibrated numbers.
 
+    Fit uses level + shape points (uniform dataset only):
+      level: vLLM reference points — pin the absolute efficiency level.
+      shape: TRT-LLM ISL/size sweep — pin curve shape + engine_factor[trtllm].
+    validate and sanity points are excluded from the objective.
+
     Holdout split: honesty check for overfitting.  With small datasets (< 10 points)
     the holdout is too small to be statistically meaningful — add more benchmark
     points to catalog/benchmarks_public.yaml before trusting the holdout score.
 
     Returns FittedConstants with train + holdout median errors for inspection.
     """
-    # Only fit on vLLM "level" points — they pin the absolute efficiency level.
-    # shape/sanity points use a different engine factor; fitting on them would
-    # conflate engine-level differences with hardware efficiency constants.
-    level_points = [p for p in points if p.fit_role == "level"]
+    # Fit on level + shape points (uniform dataset only).
+    # level: vLLM reference — pins absolute efficiency level.
+    # shape: TRT-LLM ISL/size sweep — pins curve shape + engine_factor[trtllm].
+    # validate and sanity are excluded; they don't enter the objective.
+    fit_points = [p for p in points if p.fit_role in ("level", "shape")]
 
     rng = random.Random(seed)
-    shuffled = list(level_points)
+    shuffled = list(fit_points)
     rng.shuffle(shuffled)
     n_train = max(1, int(len(shuffled) * train_frac))
     train = shuffled[:n_train]
@@ -437,7 +452,7 @@ def fit(
 
     holdout_error: Optional[float] = None
     if holdout:
-        holdout_report = report(holdout, constants=c)
+        holdout_report = report(holdout, constants=c, fit_roles=("level", "shape"))
         holdout_error = holdout_report.median_rel_error
 
     return FittedConstants(

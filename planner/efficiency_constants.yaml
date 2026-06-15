@@ -26,7 +26,7 @@ mfu_base:
   hopper:
     bf16: 0.55
     fp16: 0.55
-    fp8: 0.35280000000000006
+    fp8: 0.48
     mxfp4: 0.5
 moe_factor: 0.8
 size_floor: 0.803822635850573
