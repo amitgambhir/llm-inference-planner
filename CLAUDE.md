@@ -1,4 +1,4 @@
-# llm-inference-bench — Claude Code context
+# llm-inference-planner — Claude Code context
 
 ## Overview
 
@@ -8,7 +8,7 @@ Three-layer LLM inference planning, benchmarking, and deployment decisioning too
 2. **Load benchmarking** (`collect/run_bench.py`) — TTFT/throughput/latency under concurrent load
 3. **Quality-aware evaluation** (`evaluate/run_eval.py` + `analyze/deployment_advisor.py`) — production deployment recommendation balancing latency, cost, and quality
 
-All three layers are additive and decoupled. The original benchmark + analysis pipeline (`report.py`, `playbook/advisor.py`) is untouched.
+All three layers are additive and decoupled.
 
 ## Running tests
 
@@ -43,7 +43,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | --- | --- |
 | `catalog/gpus.yaml` | Peak FLOPS, memory bandwidth, VRAM, arch, memory_type, MFU defaults for each GPU SKU |
 | `catalog/models.yaml` | Parameter count, hidden dim, layers, KV heads; includes llama-3.3-70b and llama-4-maverick |
-| `catalog/pricing.yaml` | On-demand + 1-yr reserved cost per GPU-hour |
+| `catalog/costs.yaml` | On-demand + 1-yr reserved cost per GPU-hour |
 | `catalog/anchors.yaml` | Measured throughput anchors; written by `ingest_anchor.py` |
 | `catalog/benchmarks_public.yaml` | Public benchmark points (schema v2) — vLLM `level`, TRT-LLM `shape`, distribution `validate`, `sanity` points; Phase B stubs (measured: null) pre-staged |
 | `catalog/runtimes.yaml` | Supported inference engines with display names and engine confound notes |
@@ -51,6 +51,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | `catalog/compute_engine_factor.py` | Phase C helper — prints per-pair TRT-LLM/vLLM ratio table + median to paste into `efficiency_constants.yaml` |
 | `catalog/phase_c_refit.py` | Phase C automation — pins `engine_factor`, narrows `PARAM_BOUNDS`, runs full refit, prints CV + sensitivity + suggested test targets |
 | `planner/capacity.py` | Roofline model — prefill (compute-bound) + decode (bandwidth-bound) |
+| `planner/catalog.py` | GPU/model catalog loader — reads `catalog/gpus.yaml` + `catalog/models.yaml` |
 | `planner/cost.py` | Cost envelope from catalog pricing |
 | `planner/benchmark_plan.py` | Ordered test matrix: ISL sweep, concurrency sweep, precision compare, KV check |
 | `planner/confidence.py` | THREE-tier rubric: HIGH (±10%), MEDIUM (±20%), DEFAULT (±25%) |
@@ -73,11 +74,8 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | `evaluate/run_eval.py` | Offline quality evaluator — DeepEval + LLM-judge |
 | `analyze/deployment_advisor.py` | Deployment decision engine — 4 pure functions + CLI |
 | `analyze/report.py` | Markdown report from latency results (stdlib only) |
-| `playbook/advisor.py` | vLLM config recommendation (stdlib only) |
-| `data/generate_synthetic.py` | Synthetic reference data |
 | `datasets/*.jsonl` | Eval datasets — `schema_version: 1`, workloads: chat/rag/long_context |
 | `results/quality/` | Quality sidecars written by `run_eval.py` |
-| `results/synthetic/` | Committed reference data |
 | `results/real/` | Gitignored — populated by `run_bench.py` |
 
 ## Architecture invariants
@@ -148,9 +146,9 @@ Each quality sidecar (`results/quality/<tag>.json`) carries a `latency_tag` back
 - `quality` is `None` when no sidecar exists (warn, not error)
 - `_dataset` is `None` when no sidecar; set to `meta.dataset` from the sidecar when one is loaded
 
-### Real overrides synthetic
+### Real results only
 
-In `load_deployment`, `latency_dirs` is searched in order and **later directories win**. The default order is `[results/synthetic, results/real]`, so real measurements silently override synthetic reference data for the same tag. This matches `report.py`'s behavior.
+`load_deployment` reads from `results/real/` (gitignored, populated by `run_bench.py`) and `results/quality/` (quality sidecars). There is no `results/synthetic/` in this repo — synthetic reference data lives in `llm-inference-bench`.
 
 ## Known gotchas
 
@@ -158,7 +156,7 @@ In `load_deployment`, `latency_dirs` is searched in order and **later directorie
 
 **Hallucination normalization differs by evaluator path.** The LLM-judge prompt scores hallucination 1–5 where `5=none` (higher-is-better). After dividing by 5, `normalize_score("hallucination", ...)` is NOT applied. On the DeepEval path, `HallucinationMetric.score` returns a rate (lower-is-better), so `normalize_score` inverts via `1 - score`. The two paths are intentionally asymmetric.
 
-**DeepEval is a lazy import.** `run_deepeval` imports DeepEval inside the function body. This keeps the 305 unit tests fast — they never trigger a network call or require an `OPENAI_API_KEY`.
+**DeepEval is a lazy import.** `run_deepeval` imports DeepEval inside the function body. This keeps the 314 unit tests fast — they never trigger a network call or require an `OPENAI_API_KEY`.
 
 **app.state.anchors_file in tests.** `ingest_anchor()` defaults to writing `catalog/anchors.yaml`. The API's `/ingest/{run_id}` endpoint passes `request.app.state.anchors_file` to override this. Tests pass `tmp_path / "test_anchors.yaml"` via `create_app(anchors_file=...)` so the real catalog is never modified during the test suite.
 
@@ -205,7 +203,6 @@ The app is deployable as a hosted web service. Key files:
 | Advisor / Layer | Question answered |
 | --- | --- |
 | `planner/capacity.py` + `api/` + `ui/` | "How many replicas do I need before I run anything?" |
-| `playbook/advisor.py` | "What vLLM flags should I use for this workload + GPU?" |
 | `analyze/deployment_advisor.py` | "Which quantization/precision/config should I deploy, given quality requirements?" |
 
-Each answers a distinct question at a different stage of the deployment lifecycle. None replaces the others.
+Each answers a distinct question at a different stage of the deployment lifecycle. Neither replaces the other.
