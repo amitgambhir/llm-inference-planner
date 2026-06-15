@@ -49,3 +49,6 @@ CLAUDE.md
 
 # Superpowers design and implementation docs
 docs/superpowers/
+
+# Phase B calibration scratch (raw RunPod output — filled in manually, then replaced by YAML)
+catalog/vllm_calibration_scratch.txt

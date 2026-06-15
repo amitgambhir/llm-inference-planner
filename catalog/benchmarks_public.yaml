@@ -141,6 +141,96 @@ points:
     dataset: uniform
     source: "Trelis one-click-llms -- Llama-3.1-8B-FP8, A100 SXM, batch 64 (agg 2,432)"
 
+  # -- Phase B: Uniform vLLM calibration (RunPod 1×H100-SXM-80GB) -------------
+  # Matched to the TRT-LLM ISL grid so engine_factor[trtllm] = median(TRT/vLLM).
+  # Fill in `measured:` from catalog/runpod_phase_b.sh output, then run:
+  #   python catalog/compute_engine_factor.py
+  # to get the pinned engine_factor value for Phase C.
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 128
+    osl: 128
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: null   # TODO: fill from Phase B run
+    engine: vllm
+    engine_version: null  # TODO: fill from Phase B run
+    kv_frac: 0.95
+    fit_role: level
+    dataset: uniform
+    source: "Phase B calibration — vLLM uniform, RunPod 1×H100-SXM, matched to TRT-LLM grid"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 1000
+    osl: 1000
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: null   # TODO: fill from Phase B run
+    engine: vllm
+    engine_version: null  # TODO: fill from Phase B run
+    kv_frac: 0.95
+    fit_role: level
+    dataset: uniform
+    source: "Phase B calibration — vLLM uniform, RunPod 1×H100-SXM, matched to TRT-LLM grid"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 2048
+    osl: 128
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: null   # TODO: fill from Phase B run
+    engine: vllm
+    engine_version: null  # TODO: fill from Phase B run
+    kv_frac: 0.95
+    fit_role: level
+    dataset: uniform
+    source: "Phase B calibration — vLLM uniform, RunPod 1×H100-SXM, matched to TRT-LLM grid"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 5000
+    osl: 500
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: null   # TODO: fill from Phase B run
+    engine: vllm
+    engine_version: null  # TODO: fill from Phase B run
+    kv_frac: 0.95
+    fit_role: level
+    dataset: uniform
+    source: "Phase B calibration — vLLM uniform, RunPod 1×H100-SXM, matched to TRT-LLM grid"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 20000
+    osl: 2000
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: null   # TODO: fill from Phase B run
+    engine: vllm
+    engine_version: null  # TODO: fill from Phase B run
+    kv_frac: 0.95
+    fit_role: level
+    dataset: uniform
+    source: "Phase B calibration — vLLM uniform, RunPod 1×H100-SXM, matched to TRT-LLM grid"
+
   # ---------------------------------------------------------------------------
   # TensorRT-LLM -- fit_role: shape  (internally consistent ISL sweep;
   #   LEVEL via engine_factor; SHAPE pins f_isl/f_size curves)

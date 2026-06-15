@@ -144,6 +144,8 @@ def load_public_benchmarks() -> list[BenchmarkPoint]:
         )
     points: list[BenchmarkPoint] = []
     for p in raw.get("points", []):
+        if p.get("measured") is None:
+            continue  # pending stub (Phase B placeholders not yet filled in)
         points.append(BenchmarkPoint(
             model=p["model"],
             gpu=p["gpu"],
