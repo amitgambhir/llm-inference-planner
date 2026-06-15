@@ -47,6 +47,7 @@ import planner.efficiency as eff
 
 _BENCHMARKS_PATH = Path(__file__).parent.parent / "catalog" / "benchmarks_public.yaml"
 _CONSTANTS_PATH = Path(__file__).parent / "efficiency_constants.yaml"
+_FLAT_VALLEY_THRESHOLD = 0.01  # delta_error below this flags an underdetermined parameter
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +125,7 @@ class SensitivityResult:
     plus15_error: float
     minus15_error: float
     delta_error: float  # max(|plus - base|, |minus - base|)
-    is_flat: bool       # delta_error < 0.01 — signature of an underdetermined param
+    is_flat: bool       # delta_error < _FLAT_VALLEY_THRESHOLD; signature of underdetermined param
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +502,7 @@ def cv_leave_one_gpu_out(
     """
     fit_points = [p for p in points if p.fit_role in ("level", "shape")]
     gpus = sorted({p.gpu for p in fit_points})
-    init_c: dict = yaml.safe_load(_CONSTANTS_PATH.read_text())
+    init_c: dict = eff._load_constants()
     results: list[CrossValidationResult] = []
 
     for gpu_name in gpus:
@@ -532,7 +533,7 @@ def parameter_sensitivity(
     A flat valley (delta_error < 0.01) flags an underdetermined parameter.
     Call after fit() to verify identifiability of the current dataset + param set.
     """
-    c = constants if constants is not None else yaml.safe_load(_CONSTANTS_PATH.read_text())
+    c = constants if constants is not None else eff._load_constants()
     fit_points = [p for p in points if p.fit_role in ("level", "shape")]
     base_error = _objective(c, fit_points)
     results: list[SensitivityResult] = []
@@ -553,7 +554,7 @@ def parameter_sensitivity(
             plus15_error=plus_err,
             minus15_error=minus_err,
             delta_error=delta,
-            is_flat=(delta < 0.01),
+            is_flat=(delta < _FLAT_VALLEY_THRESHOLD),
         ))
 
     return results

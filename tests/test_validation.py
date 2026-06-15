@@ -287,6 +287,9 @@ def test_adapter_unknown_scenario_raises():
 def test_cv_leave_one_gpu_out_returns_results():
     """cv_leave_one_gpu_out returns one result per GPU that has fit-eligible points."""
     pts = load_public_benchmarks()
+    fit_pts = [p for p in pts if p.fit_role in ("level", "shape")]
+    if len({p.gpu for p in fit_pts}) < 2:
+        pytest.skip("Need ≥ 2 GPUs with fit-eligible points for leave-one-out CV")
     results = cv_leave_one_gpu_out(pts)
     assert len(results) >= 1, "Need at least one GPU with fit-eligible points"
     for r in results:
