@@ -56,7 +56,8 @@ points:
     measured: 5777
     engine: vllm
     engine_version: "0.10.0"
-    fit_role: level
+    fit_role: validate
+    dataset: distribution
     source: "Red Hat MLPerf v5.1 -- Llama-3.1-8B-FP8, 1xH100-SXM-80GB, Offline"
     url: "https://www.redhat.com/en/blog/efficient-and-reproducible-llm-inference-red-hat-mlperf-inference-v51-results"
 
@@ -72,7 +73,8 @@ points:
     measured: 5104
     engine: vllm
     engine_version: "0.10.0"
-    fit_role: level
+    fit_role: validate
+    dataset: distribution
     source: "Red Hat MLPerf v5.1 -- 1xH100-SXM-80GB, Server (TTFT/TPOT bound)"
 
   - model: llama-3.1-8b
@@ -87,7 +89,8 @@ points:
     measured: 1642
     engine: vllm
     engine_version: "0.10.0"
-    fit_role: level
+    fit_role: validate
+    dataset: distribution
     source: "Red Hat MLPerf v5.1 -- 1xL40S-PCIE-48GB, Offline"
 
   - model: llama-3.1-8b
@@ -102,7 +105,8 @@ points:
     measured: 1207
     engine: vllm
     engine_version: "0.10.0"
-    fit_role: level
+    fit_role: validate
+    dataset: distribution
     source: "Red Hat MLPerf v5.1 -- 1xL40S-PCIE-48GB, Server"
 
   # -- Trelis one-click -- Llama-3.1-8B-FP8, A100 SXM, vLLM ------------------
@@ -119,6 +123,7 @@ points:
     measured: 89
     engine: vllm
     fit_role: level
+    dataset: uniform
     source: "Trelis one-click-llms -- Llama-3.1-8B-FP8, A100 SXM, batch 1"
 
   - model: llama-3.1-8b
@@ -133,7 +138,98 @@ points:
     measured: 38
     engine: vllm
     fit_role: level
+    dataset: uniform
     source: "Trelis one-click-llms -- Llama-3.1-8B-FP8, A100 SXM, batch 64 (agg 2,432)"
+
+  # -- Phase B: Uniform vLLM calibration (RunPod 1×H100-SXM-80GB) -------------
+  # Matched to the TRT-LLM ISL grid so engine_factor[trtllm] = median(TRT/vLLM).
+  # Fill in `measured:` from catalog/runpod_phase_b.sh output, then run:
+  #   python catalog/compute_engine_factor.py
+  # to get the pinned engine_factor value for Phase C.
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 128
+    osl: 128
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: null   # TODO: fill from Phase B run
+    engine: vllm
+    engine_version: null  # TODO: fill from Phase B run
+    kv_frac: 0.95
+    fit_role: level
+    dataset: uniform
+    source: "Phase B calibration — vLLM uniform, RunPod 1×H100-SXM, matched to TRT-LLM grid"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 1000
+    osl: 1000
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: null   # TODO: fill from Phase B run
+    engine: vllm
+    engine_version: null  # TODO: fill from Phase B run
+    kv_frac: 0.95
+    fit_role: level
+    dataset: uniform
+    source: "Phase B calibration — vLLM uniform, RunPod 1×H100-SXM, matched to TRT-LLM grid"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 2048
+    osl: 128
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: null   # TODO: fill from Phase B run
+    engine: vllm
+    engine_version: null  # TODO: fill from Phase B run
+    kv_frac: 0.95
+    fit_role: level
+    dataset: uniform
+    source: "Phase B calibration — vLLM uniform, RunPod 1×H100-SXM, matched to TRT-LLM grid"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 5000
+    osl: 500
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: null   # TODO: fill from Phase B run
+    engine: vllm
+    engine_version: null  # TODO: fill from Phase B run
+    kv_frac: 0.95
+    fit_role: level
+    dataset: uniform
+    source: "Phase B calibration — vLLM uniform, RunPod 1×H100-SXM, matched to TRT-LLM grid"
+
+  - model: llama-3.1-8b
+    gpu: h100_sxm
+    dtype: fp8
+    tp: 1
+    isl: 20000
+    osl: 2000
+    batch: null
+    scenario: offline
+    metric: total_output_tps
+    measured: null   # TODO: fill from Phase B run
+    engine: vllm
+    engine_version: null  # TODO: fill from Phase B run
+    kv_frac: 0.95
+    fit_role: level
+    dataset: uniform
+    source: "Phase B calibration — vLLM uniform, RunPod 1×H100-SXM, matched to TRT-LLM grid"
 
   # ---------------------------------------------------------------------------
   # TensorRT-LLM -- fit_role: shape  (internally consistent ISL sweep;
@@ -158,6 +254,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview -- Llama-3.1-8B-FP8, H100"
 
   - model: llama-3.1-8b
@@ -174,6 +271,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview"
 
   - model: llama-3.1-8b
@@ -190,6 +288,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview"
 
   - model: llama-3.1-8b
@@ -206,6 +305,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview"
 
   - model: llama-3.1-8b
@@ -222,6 +322,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview -- long-context anchor, brackets the 9k golden case"
 
   - model: llama-3.1-8b
@@ -238,6 +339,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview -- H200 long-context"
 
   # -- Llama-3.3-70B-FP8, H100, TP=8 -- large dense, validates the TP path ----
@@ -255,6 +357,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview -- Llama-3.3-70B-FP8, 8xH100"
 
   - model: llama-3.3-70b
@@ -271,6 +374,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview"
 
   - model: llama-3.3-70b
@@ -287,6 +391,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview"
 
   # -- Llama-4-Maverick-FP8 (128-expert MoE), H200, TP=8 -- MoE long-ISL -----
@@ -304,6 +409,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview -- Llama-4-Maverick-FP8, 8xH200 (MoE)"
 
   - model: llama-4-maverick
@@ -320,6 +426,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview (MoE)"
 
   - model: llama-4-maverick
@@ -336,6 +443,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview -- MoE long-context"
 
   # ---------------------------------------------------------------------------
@@ -357,6 +465,7 @@ points:
     measured: 4125
     engine: nvidia
     fit_role: sanity
+    dataset: uniform
     source: "CoreWeave MLPerf v5.0 -- Llama-2-70B (33,000 / 8 GPUs; NVIDIA stack, TP/replica split unverified)"
     url: "https://www.coreweave.com/lp/mlperf-benchmark-results"
 
@@ -372,4 +481,5 @@ points:
     measured: 2586
     engine: llmboost
     fit_role: sanity
+    dataset: uniform
     source: "MangoBoost/Juniper MLPerf v5.0 -- Llama-2-70B (82,749 / 32 GPUs; LLMBoost, not vLLM)"

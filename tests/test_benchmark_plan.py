@@ -247,8 +247,9 @@ def test_plan_carries_confidence_label(golden_estimate):
 
 def test_plan_carries_binding_constraint(golden_estimate):
     bp = benchmark_plan(golden_estimate, "gpt-oss-20b", "h100_sxm")
-    # gpt-oss-20b at ISL=9000 is decode-bound under efficiency curves (high kv_ratio degrades bw_eff)
-    assert bp.binding_constraint == "decode-bound"
+    # gpt-oss-20b at ISL=9000 is prefill-bound — very long prefill dominates.
+    # (Previously asserted decode-bound due to a g_kv double-count that has been removed.)
+    assert bp.binding_constraint == "prefill-bound"
 
 
 def test_high_confidence_rationale_mentions_scale(high_conf_estimate):

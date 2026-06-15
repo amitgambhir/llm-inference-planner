@@ -117,7 +117,7 @@ class CapacityEstimate:
     replicas_concurrency: int = 0
     mfu_used: float = 0.0
     bw_eff_used: float = 0.0
-    decode_bw_eff_used: float = 0.0   # after KV-ratio adjustment
+    decode_bw_eff_used: float = 0.0   # base × batch amortization; KV counted once in decode_ceiling
     anchor_matched: bool = False
     tp_used: int = 1                  # tensor parallel degree used
     # Throughput-centric metrics
@@ -505,20 +505,17 @@ def plan(
     # Effective batch: continuous batching is never 100% full in steady state.
     eff_batch = max(1, int(kv.max_concurrent_seqs * batch_efficiency))
 
-    # kv_ratio: ratio of KV traffic to active weight traffic at eff_batch.
-    # Reported in assumptions and used by bw_eff_decode curve.
+    # kv_ratio: reported as a diagnostic; KV bytes are already counted once in
+    # decode_ceiling's bytes_per_step — bw_eff_decode must NOT apply a second penalty.
     weight_bytes_active = model.active_params * DTYPE_BYTES.get(dtype, 2.0)
     kv_bytes_inflight = kv.kv_bytes_per_token * avg_ctx * eff_batch
     kv_ratio = kv_bytes_inflight / max(weight_bytes_active, 1.0)
 
-    # Decode bandwidth efficiency: anchor path keeps calibrated value;
-    # no-anchor path uses smooth curve absorbing batch amortization + KV scatter.
-    # Replaces the old step-threshold (kv_ratio 3/10) block with a differentiable
-    # form that the fit() optimizer can tune against public benchmark data.
+    # Decode bandwidth efficiency: base × batch-amortization only (no kv_ratio penalty).
     if conf.anchor_matched:
         decode_bw_eff = bw_eff_base
     else:
-        decode_bw_eff = _eff.bw_eff_decode(gpu, eff_batch, kv_ratio)
+        decode_bw_eff = _eff.bw_eff_decode(gpu, eff_batch)
 
     decode_tps = decode_ceiling(gpu, model, dtype, eff_batch, avg_ctx, decode_bw_eff, tp, mfu=mfu)
 

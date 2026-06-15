@@ -81,9 +81,9 @@ def test_golden_output_tps_avg_within_1pct(golden_estimate):
 
 
 def test_golden_prefill_bound(golden_estimate):
-    # gpt-oss-20b MoE at ISL=9000: high kv_ratio degrades decode bandwidth more than
-    # the lower MFU (from curve) degrades prefill — becomes decode-bound with efficiency curves.
-    assert golden_estimate.binding_constraint == "decode-bound"
+    # gpt-oss-20b MoE at ISL=9000: very long prefill dominates — scenario is prefill-bound.
+    # (Previously asserted decode-bound due to a g_kv double-count that has been removed.)
+    assert golden_estimate.binding_constraint == "prefill-bound"
 
 
 def test_golden_confidence_default(golden_estimate):
