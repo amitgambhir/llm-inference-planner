@@ -108,6 +108,25 @@ class FittedConstants:
     n_holdout: int
 
 
+@dataclass
+class CrossValidationResult:
+    left_out_gpu: str
+    train_median_rel_error: float
+    holdout_median_rel_error: float
+    n_train: int
+    n_holdout: int
+
+
+@dataclass
+class SensitivityResult:
+    param: str
+    base_error: float
+    plus15_error: float
+    minus15_error: float
+    delta_error: float  # max(|plus - base|, |minus - base|)
+    is_flat: bool       # delta_error < 0.01 — signature of an underdetermined param
+
+
 # ---------------------------------------------------------------------------
 # Load benchmark data
 # ---------------------------------------------------------------------------
@@ -390,45 +409,18 @@ def _objective(constants: dict, train_points: list[BenchmarkPoint]) -> float:
     return r.median_rel_error
 
 
-def fit(
-    points: list[BenchmarkPoint],
-    train_frac: float = 0.70,
-    seed: int = 0,
-) -> FittedConstants:
-    """Coordinate-descent minimisation of median relative error over train split.
+def _coordinate_descent(
+    train_points: list[BenchmarkPoint],
+    init_constants: dict,
+) -> tuple[dict, float]:
+    """Pure coordinate descent over train_points. No I/O, no side effects.
 
-    Tunes efficiency_constants.yaml and writes back the fitted values so that
-    subsequent report() calls and the pytest suite use calibrated numbers.
-
-    Fit uses level + shape points (uniform dataset only):
-      level: vLLM reference points — pin the absolute efficiency level.
-      shape: TRT-LLM ISL/size sweep — pin curve shape + engine_factor[trtllm].
-    validate and sanity points are excluded from the objective.
-
-    Holdout split: honesty check for overfitting.  With small datasets (< 10 points)
-    the holdout is too small to be statistically meaningful — add more benchmark
-    points to catalog/benchmarks_public.yaml before trusting the holdout score.
-
-    Returns FittedConstants with train + holdout median errors for inspection.
+    Returns (best_constants_dict, best_median_rel_error).
+    Used by fit() (which adds disk write) and cv_leave_one_gpu_out() (no disk write).
     """
-    # Fit on level + shape points (uniform dataset only).
-    # level: vLLM reference — pins absolute efficiency level.
-    # shape: TRT-LLM ISL/size sweep — pins curve shape + engine_factor[trtllm].
-    # validate and sanity are excluded; they don't enter the objective.
-    fit_points = [p for p in points if p.fit_role in ("level", "shape")]
+    c = copy.deepcopy(init_constants)
+    best_error = _objective(c, train_points)
 
-    rng = random.Random(seed)
-    shuffled = list(fit_points)
-    rng.shuffle(shuffled)
-    n_train = max(1, int(len(shuffled) * train_frac))
-    train = shuffled[:n_train]
-    holdout = shuffled[n_train:]
-
-    c: dict = yaml.safe_load(_CONSTANTS_PATH.read_text())
-    best_error = _objective(c, train)
-
-    # Coordinate descent: cycle through all parameters, try ±{frac} steps.
-    # Stop when no step improves the objective or MAX_OUTER iterations reached.
     STEP_FRACS = [0.20, 0.10, 0.05, 0.02]
     MAX_OUTER = 60
     for _outer in range(MAX_OUTER):
@@ -444,7 +436,7 @@ def fit(
                     if abs(new_val - current_val) < 1e-12:
                         continue
                     trial_c = _set_param(c, param, new_val)
-                    trial_error = _objective(trial_c, train)
+                    trial_error = _objective(trial_c, train_points)
                     if trial_error < best_error - 1e-7:
                         best_error = trial_error
                         c = trial_c
@@ -453,19 +445,115 @@ def fit(
         if not improved:
             break
 
-    # Write fitted constants back to disk; reload the in-process cache.
-    _CONSTANTS_PATH.write_text(yaml.dump(c, default_flow_style=False, sort_keys=True))
+    return c, best_error
+
+
+def fit(
+    points: list[BenchmarkPoint],
+    train_frac: float = 0.70,
+    seed: int = 0,
+) -> FittedConstants:
+    """Coordinate-descent minimisation of median relative error over train split.
+
+    Fits on level + shape points jointly:
+      level — vLLM reference; pins absolute efficiency level (engine_factor[vllm]=1.0)
+      shape — TRT-LLM uniform sweep; pins ISL/size curve shape + engine_factor[trtllm]
+
+    validate and sanity points are excluded from the objective.
+    Writes fitted constants to efficiency_constants.yaml and reloads in-process cache.
+    """
+    fit_points = [p for p in points if p.fit_role in ("level", "shape")]
+
+    rng = random.Random(seed)
+    shuffled = list(fit_points)
+    rng.shuffle(shuffled)
+    n_train = max(1, int(len(shuffled) * train_frac))
+    train = shuffled[:n_train]
+    holdout = shuffled[n_train:]
+
+    init_c: dict = yaml.safe_load(_CONSTANTS_PATH.read_text())
+    best_c, best_error = _coordinate_descent(train, init_c)
+
+    _CONSTANTS_PATH.write_text(yaml.dump(best_c, default_flow_style=False, sort_keys=True))
     eff.reload_constants()
 
     holdout_error: Optional[float] = None
     if holdout:
-        holdout_report = report(holdout, constants=c, fit_roles=None)
+        holdout_report = report(holdout, constants=best_c, fit_roles=None)
         holdout_error = holdout_report.median_rel_error
 
     return FittedConstants(
-        constants=c,
+        constants=best_c,
         train_median_rel_error=best_error,
         holdout_median_rel_error=holdout_error,
         n_train=len(train),
         n_holdout=len(holdout),
     )
+
+
+def cv_leave_one_gpu_out(
+    points: list[BenchmarkPoint],
+) -> list[CrossValidationResult]:
+    """Leave-one-GPU-out cross-validation over fit-eligible (level + shape) points.
+
+    For each GPU that has at least one fit-eligible point: fit on all other GPUs,
+    evaluate on the held-out GPU. Tests generalization across hardware.
+    """
+    fit_points = [p for p in points if p.fit_role in ("level", "shape")]
+    gpus = sorted({p.gpu for p in fit_points})
+    init_c: dict = yaml.safe_load(_CONSTANTS_PATH.read_text())
+    results: list[CrossValidationResult] = []
+
+    for gpu_name in gpus:
+        train = [p for p in fit_points if p.gpu != gpu_name]
+        holdout = [p for p in fit_points if p.gpu == gpu_name]
+        if len(train) < 2 or not holdout:
+            continue
+        best_c, train_err = _coordinate_descent(train, init_c)
+        holdout_r = report(holdout, constants=best_c, fit_roles=None)
+        results.append(CrossValidationResult(
+            left_out_gpu=gpu_name,
+            train_median_rel_error=train_err,
+            holdout_median_rel_error=holdout_r.median_rel_error,
+            n_train=len(train),
+            n_holdout=len(holdout),
+        ))
+
+    return results
+
+
+def parameter_sensitivity(
+    points: list[BenchmarkPoint],
+    constants: Optional[dict] = None,
+    perturb_frac: float = 0.15,
+) -> list[SensitivityResult]:
+    """Perturb each fitted param ±perturb_frac and report change in median error.
+
+    A flat valley (delta_error < 0.01) flags an underdetermined parameter.
+    Call after fit() to verify identifiability of the current dataset + param set.
+    """
+    c = constants if constants is not None else yaml.safe_load(_CONSTANTS_PATH.read_text())
+    fit_points = [p for p in points if p.fit_role in ("level", "shape")]
+    base_error = _objective(c, fit_points)
+    results: list[SensitivityResult] = []
+
+    for param, lo, hi in PARAM_BOUNDS:
+        try:
+            current = _get_param(c, param)
+        except (KeyError, TypeError):
+            continue
+        plus_val = max(lo, min(hi, current * (1.0 + perturb_frac)))
+        minus_val = max(lo, min(hi, current * (1.0 - perturb_frac)))
+        plus_err = _objective(_set_param(c, param, plus_val), fit_points)
+        minus_err = _objective(_set_param(c, param, minus_val), fit_points)
+        delta = max(abs(plus_err - base_error), abs(minus_err - base_error))
+        results.append(SensitivityResult(
+            param=param,
+            base_error=base_error,
+            plus15_error=plus_err,
+            minus15_error=minus_err,
+            delta_error=delta,
+            is_flat=(delta < 0.01),
+        ))
+
+    return results

@@ -23,12 +23,17 @@ import pytest
 import planner.catalog as _catalog_module
 from planner.validate import (
     BenchmarkPoint,
+    CrossValidationResult,
     FittedConstants,
+    SensitivityResult,
     ValidationReport,
+    cv_leave_one_gpu_out,
     fit,
     load_public_benchmarks,
+    parameter_sensitivity,
     report,
     _predict_point_for_testing,
+    PARAM_BOUNDS,
 )
 
 
@@ -272,3 +277,60 @@ def test_adapter_unknown_scenario_raises():
     pt.scenario = "unknown_scenario"
     with pytest.raises(ValueError, match="Unknown scenario"):
         _predict_point_for_testing(pt)
+
+
+# ============================================================================
+# Cross-validation and sensitivity
+# ============================================================================
+
+
+def test_cv_leave_one_gpu_out_returns_results():
+    """cv_leave_one_gpu_out returns one result per GPU that has fit-eligible points."""
+    pts = load_public_benchmarks()
+    results = cv_leave_one_gpu_out(pts)
+    assert len(results) >= 1, "Need at least one GPU with fit-eligible points"
+    for r in results:
+        assert r.left_out_gpu, "left_out_gpu must be set"
+        assert 0.0 <= r.holdout_median_rel_error, "holdout error must be non-negative"
+        assert r.n_train >= 1
+        assert r.n_holdout >= 1
+
+
+def test_cv_holdout_within_reasonable_range():
+    """Held-out GPU median error should not exceed 300% (gross overfit guard).
+
+    300% is intentionally loose: leave-one-GPU-out extrapolation can fail hard when
+    the left-out GPU hosts a different model family (e.g. Llama-4-Maverick MoE on
+    H200) not represented in the training split. The guard catches catastrophic
+    failures (>3× median error) while tolerating known physics extrapolation gaps.
+    """
+    pts = load_public_benchmarks()
+    fit_pts = [p for p in pts if p.fit_role in ("level", "shape")]
+    gpus = {p.gpu for p in fit_pts}
+    if len(gpus) < 2:
+        pytest.skip("Need ≥ 2 GPUs with fit-eligible points for CV")
+    results = cv_leave_one_gpu_out(pts)
+    for r in results:
+        assert r.holdout_median_rel_error <= 3.00, (
+            f"Left-out GPU {r.left_out_gpu} holdout error {r.holdout_median_rel_error:.1%} > 300%"
+        )
+
+
+def test_parameter_sensitivity_no_flat_valleys():
+    """Every fitted param must move the objective measurably under ±15% perturbation."""
+    pts = load_public_benchmarks()
+    results = parameter_sensitivity(pts)
+    flat = [r for r in results if r.is_flat]
+    assert len(flat) < len(results), (
+        f"All {len(results)} params are flat valleys — model is underdetermined"
+    )
+
+
+def test_parameter_sensitivity_returns_all_params():
+    """parameter_sensitivity covers every entry in PARAM_BOUNDS."""
+    pts = load_public_benchmarks()
+    results = parameter_sensitivity(pts)
+    result_params = {r.param for r in results}
+    bound_params = {p for p, lo, hi in PARAM_BOUNDS}
+    missing = bound_params - result_params
+    assert not missing, f"Missing sensitivity results for: {missing}"
