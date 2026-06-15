@@ -353,10 +353,12 @@ PARAM_BOUNDS: list[tuple[str, float, float]] = [
     ("isl_floor",             0.20, 0.90),
     ("isl_scale",             64.0, 8192.0),
     ("moe_factor",            0.60, 1.00),
-    ("batch_floor",           0.80, 1.00),
+    ("batch_floor",           0.80, 1.00),   # prior 0.80; lower bound intentionally tight
     ("batch_scale",           1.0,  64.0),
     # --- Engine factor: vllm=1.0 fixed; only trtllm is free ---
     ("engine_factor.trtllm",  1.00, 3.00),
+    # NOTE: fp16, mxfp4, and Blackwell arch entries are absent because no public
+    # benchmark points cover those dtypes/arches yet. Add bounds here when benchmarks exist.
 ]
 
 
@@ -457,7 +459,7 @@ def fit(
 
     holdout_error: Optional[float] = None
     if holdout:
-        holdout_report = report(holdout, constants=c, fit_roles=("level", "shape"))
+        holdout_report = report(holdout, constants=c, fit_roles=None)
         holdout_error = holdout_report.median_rel_error
 
     return FittedConstants(
