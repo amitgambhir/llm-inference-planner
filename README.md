@@ -103,7 +103,7 @@ This tool solves all three. It gives every ML platform engineer and solutions ar
 **Plan** — before you have a GPU:
 
 - Describe your workload: requests/day, input/output token lengths, TTFT SLO, traffic class
-- Get back: recommended replica count, low/high range, binding constraint (`compute`, `bandwidth`, or `kv_budget`), cost envelope (on-demand + 1-yr reserved), and a confidence level with an explicit uncertainty band (HIGH ±10%, MEDIUM ±25%, LOW ±50%)
+- Get back: recommended replica count, low/high range, binding constraint (`compute`, `bandwidth`, or `kv_budget`), cost envelope (on-demand + 1-yr reserved), and a confidence level with an explicit uncertainty band (HIGH ±10%, MEDIUM ±20%, DEFAULT ±25%)
 - Get a prioritized benchmark plan — ordered CLI commands that collapse the biggest uncertainty first
 
 **Measure** — against a real endpoint:
@@ -312,9 +312,9 @@ Open [http://localhost:3000](http://localhost:3000). The four-screen UI guides y
 | `planner/cost.py` | On-demand and 1-yr reserved cost envelope; reads pricing from `catalog/pricing.yaml` |
 | `planner/benchmark_plan.py` | Ordered test matrix — ISL sweep, concurrency sweep, precision comparison, KV cache validation |
 | `planner/confidence.py` | Three-tier rubric: HIGH (±10%), MEDIUM (±20%), DEFAULT (±25%); `geometry_source="estimated"` downgrades one level |
-| `planner/efficiency.py` | Regime-aware MFU and bandwidth efficiency curves — `mfu_prefill` (model size + ISL + MoE) and `bw_eff_decode` (batch + KV-ratio) |
+| `planner/efficiency.py` | Regime-aware MFU and bandwidth efficiency curves — `mfu_prefill` (model size + ISL + MoE) and `bw_eff_decode` (batch amortization; KV counted once in `decode_ceiling`) |
 | `planner/efficiency_constants.yaml` | Tunable constants for efficiency curves; calibrated by `validate.fit()` against public benchmarks |
-| `planner/validate.py` | Fit and validate efficiency curves against `catalog/benchmarks_public.yaml`; `fit()` writes back updated constants |
+| `planner/validate.py` | Fit and validate efficiency curves — `fit()`, `report()`, `cv_leave_one_gpu_out()`, `parameter_sensitivity()`; dual-roofline per-point adapter routes by scenario/metric/engine; `fit()` writes back updated constants |
 | `planner/ingest_anchor.py` | Reads a completed benchmark JSON and writes a calibration anchor to `catalog/anchors.yaml` |
 | `planner/compare.py` | Multi-config comparison: cheapest (cost_day_usd or replica proxy), safest (confidence rank × band), best latency |
 | `planner/report.py` | Markdown report with mode badge (`estimate_only` / `partially_validated` / `validated_by_benchmark`) |
@@ -345,7 +345,7 @@ YAML files under `catalog/` contain the hardware and pricing data the planner re
 | `catalog/models.yaml` | Parameter count, hidden dim, layer count, KV heads — includes llama-3.1-8b/70b, llama-3.3-70b, llama-4-maverick, gpt-oss-20b |
 | `catalog/pricing.yaml` | On-demand and 1-yr reserved cost per GPU-hour by provider/region |
 | `catalog/anchors.yaml` | Measured throughput anchors written by `ingest_anchor.py` |
-| `catalog/benchmarks_public.yaml` | Public benchmark points (schema v2) — vLLM `level`, TRT-LLM `shape`, and `sanity` points used by `validate.fit()` |
+| `catalog/benchmarks_public.yaml` | Public benchmark points (schema v2) — vLLM `level`, TRT-LLM `shape`, distribution `validate`, and `sanity` points; Phase B calibration stubs pre-staged |
 | `catalog/runtimes.yaml` | Supported runtime engines with display names and engine confound notes |
 
 Five GPU SKUs shipped: `h100_sxm`, `h200_sxm`, `a100_80gb_sxm`, `l40s`, `l4`.
@@ -715,8 +715,11 @@ llm-inference-bench/
 │   ├── models.yaml                 # params, hidden dim, layers, KV heads (llama-3.1/3.3/4-maverick, gpt-oss-20b)
 │   ├── pricing.yaml                # on-demand + 1-yr reserved cost per GPU-hour
 │   ├── anchors.yaml                # measured throughput anchors; updated by ingest_anchor.py
-│   ├── benchmarks_public.yaml      # public benchmark points (schema v2) for efficiency curve fitting
-│   └── runtimes.yaml               # supported inference engines (vLLM, TRT-LLM, SGLang)
+│   ├── benchmarks_public.yaml      # public benchmark points (schema v2); level/shape/validate/sanity roles; Phase B stubs
+│   ├── runtimes.yaml               # supported inference engines (vLLM, TRT-LLM, SGLang)
+│   ├── runpod_phase_b.sh           # Phase B: RunPod benchmark runbook (5 ISL/OSL pairs, H100 SXM)
+│   ├── compute_engine_factor.py    # Phase C helper: compute median(TRT-LLM/vLLM) ratio table
+│   └── phase_c_refit.py            # Phase C automation: pin engine_factor, refit, CV, sensitivity, test targets
 │
 ├── planner/                        # capacity planner — pure Python, no GPU needed
 │   ├── capacity.py                 # roofline model: prefill + decode → replicas, TTFT, KV budget
@@ -780,7 +783,7 @@ llm-inference-bench/
 │   ├── rag.yaml                    # mixed, ISL=2048, SLA=700ms
 │   └── long_context.yaml           # batch, ISL=4096, SLA=2000ms
 │
-├── tests/                          # 305 tests total
+├── tests/                          # 314 tests total
 │   ├── test_capacity.py            # 55 tests: roofline model, prefill/decode phases, KV budget
 │   ├── test_api.py                 # 35 tests: FastAPI acceptance tests with isolated SQLite
 │   ├── test_ingest_anchor.py       # 29 tests: ingest_anchor + confidence rubric
@@ -792,7 +795,7 @@ llm-inference-bench/
 │   ├── test_cost.py                # 18 tests: cost envelope, on-demand vs reserved
 │   ├── test_efficiency.py          # 16 tests: MFU + bandwidth efficiency curves
 │   ├── test_compare.py             # 19 tests: cheapest/safest/best-latency scoring
-│   └── test_validation.py          # 9 tests: public benchmark fit and accuracy targets
+│   └── test_validation.py          # 18 tests: fit, accuracy, adapter routing, CV, sensitivity
 │
 ├── results/
 │   ├── real/                       # populated by run_bench.py (gitignored)

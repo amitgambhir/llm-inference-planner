@@ -510,9 +510,11 @@ workload is prefill-infeasible on H100 (needs 61.5k input tok/s; ceiling is 37k)
 the uniform-dataset roofline cannot correctly predict them. They are predicted and checked
 at widened tolerance (`fit_role: validate`), not included in the fit objective.
 
-Phase B will add 5 uniform vLLM calibration points on H100 SXM (matched to the TRT-LLM
-grid) to pin `engine_factor[trtllm]` as a direct matched-pair median and promote those
-to `fit_role: level`.
+Phase B stubs are pre-staged in `catalog/benchmarks_public.yaml` (`measured: null`; skipped
+by `load_public_benchmarks` until filled). Fill the 5 measured values from
+`catalog/runpod_phase_b.sh` output, then run `catalog/phase_c_refit.py` to pin
+`engine_factor[trtllm]` as the direct matched-pair median and promote those stubs to
+`fit_role: level`.
 
 ### Post-fit accuracy (Phase A — level + shape fit set, provisional)
 
@@ -546,6 +548,24 @@ Validate points (Red Hat, distribution): median ~19%.
 To refit after adding benchmark points:
 ```bash
 python3 -c "from planner.validate import fit, load_public_benchmarks; fit(load_public_benchmarks())"
+```
+
+### Phase B → C calibration workflow
+
+**Phase B** (requires RunPod 1×H100-SXM pod):
+```bash
+# On the pod:
+bash catalog/runpod_phase_b.sh 2>&1 | tee phase_b_results.txt
+# Fill the 5 `measured: null` values in catalog/benchmarks_public.yaml
+# Also fill `engine_version`
+```
+
+**Phase C** (local, after Phase B YAML is filled):
+```bash
+python catalog/phase_c_refit.py
+# Automatically: pins engine_factor, narrows PARAM_BOUNDS, runs refit (seed=42),
+# prints leave-one-GPU-out CV, parameter sensitivity, and suggested test targets.
+# Then commit the updated constants + YAML + tests.
 ```
 
 ---
