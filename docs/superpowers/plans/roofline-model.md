@@ -137,7 +137,7 @@ Falls back to `gpu.default_mfu_prefill` when GPU `arch` is absent or unmapped
 (e.g. custom GPU specs in tests).
 
 Fitted constants after `validate.fit()` on the public benchmark set (hopper fp8 example):
-`base=0.353`, `size_floor=0.804`, `size_scale=4.15 B params`, `isl_floor=0.49`, `isl_scale=512`, `moe_factor=0.80`.
+`base=0.530`, `size_floor=0.482`, `size_scale=5.86 B params`, `isl_floor=0.392`, `isl_scale=512`, `moe_factor=0.80`.
 
 ### Bandwidth efficiency for decode — `bw_eff_decode(gpu, eff_batch)`
 
@@ -167,7 +167,7 @@ batch=1 for weight reads), so no batch or KV adjustment is applied.
 ### Precedence
 
 ```
-measured anchor  >  efficiency curve  >  hard floor (0.08 for MFU, 0.05 for bw_eff)
+measured anchor  >  efficiency curve  >  hard floor (0.08 for MFU; bw_eff has no separate hard floor — natural floor = base × batch_floor)
 ```
 
 When a HIGH-confidence anchor exists, `plan()` uses the measured MFU directly
@@ -265,7 +265,7 @@ limited by how fast weights stream from HBM, not by TFLOPS.
 ridge_point ≈ peak_flops × mfu / (bandwidth × bw_eff_prefill)
 ```
 
-For H100 fp8 with fitted constants (Phase A): `1979e12 × 0.48 / (3350e9 × 0.39) ≈ 728 tokens`.
+For H100 fp8 with fitted constants (Phase A): `1979e12 × 0.53 / (3350e9 × 0.39) ≈ 803 tokens`.
 
 - **ISL > ridge point**: compute-bound; `bw_tps` does not bind.
 - **ISL < ridge point**: bandwidth-bound; adding more TFLOPS does not help.
