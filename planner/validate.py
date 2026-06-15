@@ -181,9 +181,12 @@ def _dual_roofline_out_tps(
     )
     flops_dec_per_output = 2 * model_profile.active_params
     flops_per_output_token = (isl * flops_pf_per_input + osl * flops_dec_per_output) / osl
-    compute_out_tps = (
-        gpu_profile.peak_flops.get(dtype) * 1e12 * mfu * tp / flops_per_output_token
-    )
+    peak_flops = gpu_profile.peak_flops.get(dtype)
+    if peak_flops is None:
+        raise CatalogError(
+            f"GPU '{gpu_profile.name}' does not support dtype '{dtype}'."
+        )
+    compute_out_tps = peak_flops * 1e12 * mfu * tp / flops_per_output_token
 
     avg_ctx = isl + osl // 2
     decode_out_tps = decode_ceiling(
@@ -232,7 +235,7 @@ def _predict_point(point: BenchmarkPoint, constants: Optional[dict] = None) -> f
             f"Unknown scenario: '{point.scenario}'. Supported: offline, server, latency"
         )
 
-    c = constants if constants is not None else yaml.safe_load(_CONSTANTS_PATH.read_text())
+    c = constants if constants is not None else eff._load_constants()
     engine_factors: dict = c.get("engine_factor", {})
     engine_factor = engine_factors.get(point.engine, 1.0) if point.engine else 1.0
 
@@ -251,7 +254,7 @@ def _predict_point(point: BenchmarkPoint, constants: Optional[dict] = None) -> f
 
 
 # Test-access alias (private function exposed for unit tests only)
-_predict_point_public = _predict_point
+_predict_point_for_testing = _predict_point
 
 
 # ---------------------------------------------------------------------------

@@ -28,7 +28,7 @@ from planner.validate import (
     fit,
     load_public_benchmarks,
     report,
-    _predict_point_public,
+    _predict_point_for_testing,
 )
 
 
@@ -219,7 +219,7 @@ def test_adapter_offline_uses_dual_roofline():
     # pick the TRT-LLM h100 isl=1000 osl=1000 shape point
     pt = next(p for p in pts if p.gpu == "h100_sxm" and p.isl == 1000 and p.scenario == "offline"
               and p.engine == "trtllm")
-    predicted = _predict_point_public(pt)
+    predicted = _predict_point_for_testing(pt)
     assert predicted > 0, "Prediction must be positive"
 
 
@@ -235,8 +235,8 @@ def test_adapter_latency_uses_fixed_batch():
     pts = load_public_benchmarks()
     pt_b1 = next(p for p in pts if p.scenario == "latency" and p.batch == 1)
     pt_b64 = next(p for p in pts if p.scenario == "latency" and p.batch == 64)
-    pred_b1 = _predict_point_public(pt_b1)
-    pred_b64 = _predict_point_public(pt_b64)
+    pred_b1 = _predict_point_for_testing(pt_b1)
+    pred_b64 = _predict_point_for_testing(pt_b64)
     # per_user_decode_tps: batch=1 per-user >> batch=64 per-user (weight not amortised)
     assert pred_b1 > pred_b64, (
         f"per_user_decode_tps: batch=1 per-user should exceed batch=64 per-user "
@@ -247,11 +247,21 @@ def test_adapter_latency_uses_fixed_batch():
 
 
 def test_adapter_engine_factor_applied():
-    """TRT-LLM points receive engine_factor > 1.0 (should predict higher than vLLM equivalent)."""
+    """TRT-LLM prediction must be engine_factor × vLLM prediction for the same conditions."""
+    import copy
     from planner.efficiency import _load_constants
+    pts = load_public_benchmarks()
+    pt_trt = next(p for p in pts if p.engine == "trtllm")
+    pt_vllm = copy.copy(pt_trt)
+    pt_vllm.engine = "vllm"
+    pred_trt = _predict_point_for_testing(pt_trt)
+    pred_vllm = _predict_point_for_testing(pt_vllm)
     c = _load_constants()
-    ef_trtllm = c.get("engine_factor", {}).get("trtllm", 1.0)
-    assert ef_trtllm > 1.0, f"engine_factor[trtllm] should be > 1.0, got {ef_trtllm}"
+    ef = c.get("engine_factor", {}).get("trtllm", 1.0)
+    assert ef > 1.0, f"engine_factor[trtllm] must be > 1.0, got {ef}"
+    assert abs(pred_trt / pred_vllm - ef) < 1e-6, (
+        f"TRT-LLM/vLLM prediction ratio {pred_trt/pred_vllm:.4f} should equal engine_factor {ef:.4f}"
+    )
 
 
 def test_adapter_unknown_scenario_raises():
@@ -261,4 +271,4 @@ def test_adapter_unknown_scenario_raises():
     pt = copy.copy(pts[0])
     pt.scenario = "unknown_scenario"
     with pytest.raises(ValueError, match="Unknown scenario"):
-        _predict_point_public(pt)
+        _predict_point_for_testing(pt)
