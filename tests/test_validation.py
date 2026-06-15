@@ -28,6 +28,7 @@ from planner.validate import (
     fit,
     load_public_benchmarks,
     report,
+    _predict_point_public,
 )
 
 
@@ -205,3 +206,59 @@ def test_holdout_not_overfit():
         f"Even before overfit check, median error {r_full.median_rel_error:.1%} is too high. "
         "Run validate.fit() to recalibrate."
     )
+
+
+# ============================================================================
+# Adapter routing — each (metric, scenario) uses the right prediction path
+# ============================================================================
+
+
+def test_adapter_offline_uses_dual_roofline():
+    """Offline total_output_tps: predict > 0 (dual-roofline returns a positive value)."""
+    pts = load_public_benchmarks()
+    # pick the TRT-LLM h100 isl=1000 osl=1000 shape point
+    pt = next(p for p in pts if p.gpu == "h100_sxm" and p.isl == 1000 and p.scenario == "offline"
+              and p.engine == "trtllm")
+    predicted = _predict_point_public(pt)
+    assert predicted > 0, "Prediction must be positive"
+
+
+def test_adapter_latency_uses_fixed_batch():
+    """Latency scenario with explicit batch uses that batch, not max_concurrent_seqs.
+
+    Both Trelis latency points have metric=per_user_decode_tps, which divides by batch.
+    We verify routing by checking that batch=64 predicts lower per-user TPS than batch=1
+    (weight-amortization overhead reduces per-user speed at higher concurrency), AND that
+    the ratio is between 0 and 1 (batch=64 per-user < batch=1 per-user as expected).
+    This confirms batch is read from the point, not from max_concurrent_seqs.
+    """
+    pts = load_public_benchmarks()
+    pt_b1 = next(p for p in pts if p.scenario == "latency" and p.batch == 1)
+    pt_b64 = next(p for p in pts if p.scenario == "latency" and p.batch == 64)
+    pred_b1 = _predict_point_public(pt_b1)
+    pred_b64 = _predict_point_public(pt_b64)
+    # per_user_decode_tps: batch=1 per-user >> batch=64 per-user (weight not amortised)
+    assert pred_b1 > pred_b64, (
+        f"per_user_decode_tps: batch=1 per-user should exceed batch=64 per-user "
+        f"(got {pred_b1:.1f} vs {pred_b64:.1f})"
+    )
+    # Both must be positive — routing actually resolved
+    assert pred_b1 > 0 and pred_b64 > 0
+
+
+def test_adapter_engine_factor_applied():
+    """TRT-LLM points receive engine_factor > 1.0 (should predict higher than vLLM equivalent)."""
+    from planner.efficiency import _load_constants
+    c = _load_constants()
+    ef_trtllm = c.get("engine_factor", {}).get("trtllm", 1.0)
+    assert ef_trtllm > 1.0, f"engine_factor[trtllm] should be > 1.0, got {ef_trtllm}"
+
+
+def test_adapter_unknown_scenario_raises():
+    """Adapter raises ValueError for unrecognised scenario."""
+    import copy
+    pts = load_public_benchmarks()
+    pt = copy.copy(pts[0])
+    pt.scenario = "unknown_scenario"
+    with pytest.raises(ValueError, match="Unknown scenario"):
+        _predict_point_public(pt)

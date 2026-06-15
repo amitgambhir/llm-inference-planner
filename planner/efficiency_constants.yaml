@@ -1,8 +1,11 @@
 batch_floor: 0.8
 batch_scale: 30.378784423680003
 bw_base:
-  gddr: 0.3773
-  hbm: 0.43605345487500025
+  gddr: 0.35
+  hbm: 0.4
+engine_factor:
+  trtllm: 1.50
+  vllm: 1.00
 isl_floor: 0.49
 isl_scale: 512.0
 mfu_base:

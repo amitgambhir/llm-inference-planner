@@ -153,11 +153,57 @@ def load_public_benchmarks() -> list[BenchmarkPoint]:
 # ---------------------------------------------------------------------------
 
 
-def _predict_point(point: BenchmarkPoint, constants: Optional[dict] = None) -> float:
-    """Predict the benchmark metric using the roofline model + efficiency curves.
+def _dual_roofline_out_tps(
+    gpu_profile,
+    model_profile,
+    dtype: str,
+    isl: int,
+    osl: int,
+    batch: int,
+    tp: int = 1,
+    constants: Optional[dict] = None,
+) -> float:
+    """Output tokens/sec via dual-roofline over the whole request lifecycle.
 
-    For offline scenario: batch = max_concurrent_seqs (fully saturated).
-    For latency scenario: batch is the stated concurrent batch size.
+    min(compute_lifecycle, decode_bw_at_base_efficiency)
+
+    compute_lifecycle: FLOPs across isl prefill tokens + osl decode tokens, per output token.
+    decode_bw: decode_ceiling at base HBM efficiency (no g_kv — KV counted once in bytes_per_step).
+    """
+    mfu = eff.mfu_prefill(model_profile, gpu_profile, dtype, isl, constants=constants)
+    base_bw_eff = eff.bw_eff_prefill(gpu_profile, constants=constants)
+
+    # Lifecycle compute ceiling: total FLOPs for one output token (prefill + decode amortised)
+    q_proj_dim = model_profile.num_q_heads * model_profile.head_dim
+    flops_pf_per_input = (
+        2 * model_profile.active_params
+        + 2 * model_profile.num_layers * isl * q_proj_dim
+    )
+    flops_dec_per_output = 2 * model_profile.active_params
+    flops_per_output_token = (isl * flops_pf_per_input + osl * flops_dec_per_output) / osl
+    compute_out_tps = (
+        gpu_profile.peak_flops.get(dtype) * 1e12 * mfu * tp / flops_per_output_token
+    )
+
+    avg_ctx = isl + osl // 2
+    decode_out_tps = decode_ceiling(
+        gpu_profile, model_profile, dtype,
+        batch, avg_ctx, base_bw_eff, tp=tp, mfu=mfu,
+    )
+
+    return min(compute_out_tps, decode_out_tps)
+
+
+def _predict_point(point: BenchmarkPoint, constants: Optional[dict] = None) -> float:
+    """Predict the benchmark metric using per-point conditions (metric, scenario, kv_frac, tp, engine).
+
+    Routing:
+      offline / server → _dual_roofline_out_tps at reconstructed max_concurrent_seqs
+      latency          → decode_ceiling at stated batch (base HBM efficiency)
+
+    engine_factor scales the raw prediction: vllm=1.0 (reference), trtllm=~1.5, etc.
+    Server points use the offline formula — they are typically fit_role: validate with
+    widened tolerance (SLO throttling isn't modelled here).
     """
     model_profile = get_model(point.model)
     gpu_profile = get_gpu(point.gpu)
@@ -166,28 +212,46 @@ def _predict_point(point: BenchmarkPoint, constants: Optional[dict] = None) -> f
         gpu_profile, model_profile, point.dtype, point.isl, point.osl,
         gpu_mem_util=point.kv_frac, tp=point.tp,
     )
+    batch = point.batch if point.batch is not None else kb.max_concurrent_seqs
 
-    predict_batch = kb.max_concurrent_seqs if point.batch is None else point.batch
-    avg_ctx = point.isl + point.osl // 2
+    if point.scenario in ("offline", "server"):
+        raw = _dual_roofline_out_tps(
+            gpu_profile, model_profile, point.dtype, point.isl, point.osl,
+            batch, tp=point.tp, constants=constants,
+        )
+    elif point.scenario == "latency":
+        base_bw_eff = eff.bw_eff_prefill(gpu_profile, constants=constants)
+        mfu_val = eff.mfu_prefill(model_profile, gpu_profile, point.dtype, point.isl, constants=constants)
+        avg_ctx = point.isl + point.osl // 2
+        raw = decode_ceiling(
+            gpu_profile, model_profile, point.dtype,
+            batch, avg_ctx, base_bw_eff, tp=point.tp, mfu=mfu_val,
+        )
+    else:
+        raise ValueError(
+            f"Unknown scenario: '{point.scenario}'. Supported: offline, server, latency"
+        )
 
-    mfu_val = eff.mfu_prefill(model_profile, gpu_profile, point.dtype, point.isl, constants=constants)
-    decode_bw = eff.bw_eff_decode(gpu_profile, predict_batch, constants=constants)
+    c = constants if constants is not None else yaml.safe_load(_CONSTANTS_PATH.read_text())
+    engine_factors: dict = c.get("engine_factor", {})
+    engine_factor = engine_factors.get(point.engine, 1.0) if point.engine else 1.0
 
-    tps_group = decode_ceiling(
-        gpu_profile, model_profile, point.dtype,
-        predict_batch, avg_ctx, decode_bw, tp=point.tp, mfu=mfu_val,
-    )
+    pred = raw * engine_factor
 
     if point.metric == "total_output_tps":
-        return tps_group          # group-level throughput — no further division
+        return pred
     if point.metric == "agg_throughput_tps_per_gpu":
-        return tps_group / point.tp
+        return pred / point.tp
     if point.metric == "per_user_decode_tps":
-        return tps_group / max(predict_batch, 1)
+        return pred / max(batch, 1)
     raise ValueError(
         f"Unknown metric: '{point.metric}'. "
         "Supported: total_output_tps, agg_throughput_tps_per_gpu, per_user_decode_tps"
     )
+
+
+# Test-access alias (private function exposed for unit tests only)
+_predict_point_public = _predict_point
 
 
 # ---------------------------------------------------------------------------
