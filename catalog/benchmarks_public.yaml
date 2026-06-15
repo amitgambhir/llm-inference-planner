@@ -57,6 +57,7 @@ points:
     engine: vllm
     engine_version: "0.10.0"
     fit_role: level
+    dataset: distribution
     source: "Red Hat MLPerf v5.1 -- Llama-3.1-8B-FP8, 1xH100-SXM-80GB, Offline"
     url: "https://www.redhat.com/en/blog/efficient-and-reproducible-llm-inference-red-hat-mlperf-inference-v51-results"
 
@@ -73,6 +74,7 @@ points:
     engine: vllm
     engine_version: "0.10.0"
     fit_role: level
+    dataset: distribution
     source: "Red Hat MLPerf v5.1 -- 1xH100-SXM-80GB, Server (TTFT/TPOT bound)"
 
   - model: llama-3.1-8b
@@ -88,6 +90,7 @@ points:
     engine: vllm
     engine_version: "0.10.0"
     fit_role: level
+    dataset: distribution
     source: "Red Hat MLPerf v5.1 -- 1xL40S-PCIE-48GB, Offline"
 
   - model: llama-3.1-8b
@@ -103,6 +106,7 @@ points:
     engine: vllm
     engine_version: "0.10.0"
     fit_role: level
+    dataset: distribution
     source: "Red Hat MLPerf v5.1 -- 1xL40S-PCIE-48GB, Server"
 
   # -- Trelis one-click -- Llama-3.1-8B-FP8, A100 SXM, vLLM ------------------
@@ -119,6 +123,7 @@ points:
     measured: 89
     engine: vllm
     fit_role: level
+    dataset: uniform
     source: "Trelis one-click-llms -- Llama-3.1-8B-FP8, A100 SXM, batch 1"
 
   - model: llama-3.1-8b
@@ -133,6 +138,7 @@ points:
     measured: 38
     engine: vllm
     fit_role: level
+    dataset: uniform
     source: "Trelis one-click-llms -- Llama-3.1-8B-FP8, A100 SXM, batch 64 (agg 2,432)"
 
   # ---------------------------------------------------------------------------
@@ -158,6 +164,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview -- Llama-3.1-8B-FP8, H100"
 
   - model: llama-3.1-8b
@@ -174,6 +181,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview"
 
   - model: llama-3.1-8b
@@ -190,6 +198,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview"
 
   - model: llama-3.1-8b
@@ -206,6 +215,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview"
 
   - model: llama-3.1-8b
@@ -222,6 +232,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview -- long-context anchor, brackets the 9k golden case"
 
   - model: llama-3.1-8b
@@ -238,6 +249,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview -- H200 long-context"
 
   # -- Llama-3.3-70B-FP8, H100, TP=8 -- large dense, validates the TP path ----
@@ -255,6 +267,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview -- Llama-3.3-70B-FP8, 8xH100"
 
   - model: llama-3.3-70b
@@ -271,6 +284,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview"
 
   - model: llama-3.3-70b
@@ -287,6 +301,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview"
 
   # -- Llama-4-Maverick-FP8 (128-expert MoE), H200, TP=8 -- MoE long-ISL -----
@@ -304,6 +319,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview -- Llama-4-Maverick-FP8, 8xH200 (MoE)"
 
   - model: llama-4-maverick
@@ -320,6 +336,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview (MoE)"
 
   - model: llama-4-maverick
@@ -336,6 +353,7 @@ points:
     engine_version: "0.20"
     kv_frac: 0.95
     fit_role: shape
+    dataset: uniform
     source: "TensorRT-LLM v0.20 perf-overview -- MoE long-context"
 
   # ---------------------------------------------------------------------------
@@ -357,6 +375,7 @@ points:
     measured: 4125
     engine: nvidia
     fit_role: sanity
+    dataset: uniform
     source: "CoreWeave MLPerf v5.0 -- Llama-2-70B (33,000 / 8 GPUs; NVIDIA stack, TP/replica split unverified)"
     url: "https://www.coreweave.com/lp/mlperf-benchmark-results"
 
@@ -372,4 +391,5 @@ points:
     measured: 2586
     engine: llmboost
     fit_role: sanity
+    dataset: uniform
     source: "MangoBoost/Juniper MLPerf v5.0 -- Llama-2-70B (82,749 / 32 GPUs; LLMBoost, not vLLM)"

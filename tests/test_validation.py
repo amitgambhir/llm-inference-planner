@@ -53,7 +53,8 @@ def test_load_public_benchmarks_schema():
     pts = load_public_benchmarks()
     valid_metrics = {"agg_throughput_tps_per_gpu", "per_user_decode_tps", "total_output_tps"}
     valid_scenarios = {"offline", "latency", "server"}
-    valid_fit_roles = {"level", "shape", "sanity"}
+    valid_fit_roles = {"level", "shape", "sanity", "validate"}
+    valid_datasets = {"uniform", "distribution"}
     for pt in pts:
         assert pt.model, f"Missing model: {pt}"
         assert pt.gpu, f"Missing gpu: {pt}"
@@ -64,6 +65,8 @@ def test_load_public_benchmarks_schema():
         assert pt.isl > 0 and pt.osl > 0, f"ISL/OSL must be positive: {pt}"
         assert pt.fit_role in valid_fit_roles, f"Unknown fit_role '{pt.fit_role}': {pt}"
         assert 0.0 < pt.kv_frac <= 1.0, f"kv_frac out of range: {pt}"
+        assert pt.dataset in valid_datasets, f"Unknown dataset '{pt.dataset}': {pt}"
+        assert pt.pp >= 1, f"pp must be >= 1: {pt}"
 
 
 def test_load_public_benchmarks_covers_hbm_and_gddr():

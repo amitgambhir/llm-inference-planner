@@ -70,8 +70,11 @@ class BenchmarkPoint:
     url: Optional[str] = None
     engine: Optional[str] = None   # "vllm" | "trtllm" | "sglang" | ...
     engine_version: Optional[str] = None
-    fit_role: str = "level"        # "level" | "shape" | "sanity"
+    fit_role: str = "level"        # "level" | "shape" | "validate" | "sanity"
     kv_frac: float = 0.90          # GPU memory fraction reserved for KV cache
+    dataset: str = "uniform"       # "uniform" (fixed ISL/OSL, stdev=0) | "distribution" (mean ISL/OSL)
+    kv_dtype: Optional[str] = None # KV cache dtype; None = same as weights dtype
+    pp: int = 1                    # pipeline parallel degree (comms not modeled; for record only)
 
 
 @dataclass
@@ -138,6 +141,9 @@ def load_public_benchmarks() -> list[BenchmarkPoint]:
             engine_version=p.get("engine_version"),
             fit_role=p.get("fit_role", "level"),
             kv_frac=float(p.get("kv_frac", 0.90)),
+            dataset=p.get("dataset", "uniform"),
+            kv_dtype=p.get("kv_dtype"),
+            pp=int(p.get("pp", 1)),
         ))
     return points
 
