@@ -378,8 +378,13 @@ def _set_param(c: dict, dotted_key: str, value: float) -> dict:
 
 
 def _objective(constants: dict, train_points: list[BenchmarkPoint]) -> float:
-    """Median relative error on train_points."""
-    r = report(train_points, constants=constants)
+    """Median relative error on train_points.
+
+    fit_roles=None: the caller has already pre-filtered the list to the desired
+    roles; passing None tells report() to score every point it receives rather
+    than re-filtering to level-only.
+    """
+    r = report(train_points, constants=constants, fit_roles=None)
     return r.median_rel_error
 
 
