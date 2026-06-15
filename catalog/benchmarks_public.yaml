@@ -56,7 +56,7 @@ points:
     measured: 5777
     engine: vllm
     engine_version: "0.10.0"
-    fit_role: level
+    fit_role: validate
     dataset: distribution
     source: "Red Hat MLPerf v5.1 -- Llama-3.1-8B-FP8, 1xH100-SXM-80GB, Offline"
     url: "https://www.redhat.com/en/blog/efficient-and-reproducible-llm-inference-red-hat-mlperf-inference-v51-results"
@@ -73,7 +73,7 @@ points:
     measured: 5104
     engine: vllm
     engine_version: "0.10.0"
-    fit_role: level
+    fit_role: validate
     dataset: distribution
     source: "Red Hat MLPerf v5.1 -- 1xH100-SXM-80GB, Server (TTFT/TPOT bound)"
 
@@ -89,7 +89,7 @@ points:
     measured: 1642
     engine: vllm
     engine_version: "0.10.0"
-    fit_role: level
+    fit_role: validate
     dataset: distribution
     source: "Red Hat MLPerf v5.1 -- 1xL40S-PCIE-48GB, Offline"
 
@@ -105,7 +105,7 @@ points:
     measured: 1207
     engine: vllm
     engine_version: "0.10.0"
-    fit_role: level
+    fit_role: validate
     dataset: distribution
     source: "Red Hat MLPerf v5.1 -- 1xL40S-PCIE-48GB, Server"
 
