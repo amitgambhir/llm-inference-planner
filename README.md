@@ -62,15 +62,28 @@ Run as a module from the project root (the `planner/` package uses relative impo
 
 ```bash
 python3 -m planner.capacity \
-  --model llama-3.1-8b \          # model id from catalog/models.yaml
-  --gpu h100_sxm \                # GPU SKU from catalog/gpus.yaml
-  --dtype fp8 \                   # quantization: fp16, bf16, fp8, int4
-  --requests-per-day 50000 \      # daily request volume
-  --isl 1024 \                    # input sequence length (tokens per request)
-  --osl 256 \                     # output sequence length (tokens per response)
-  --ttft-slo-ms 500 \             # time-to-first-token SLO in milliseconds
-  --traffic-class realtime        # realtime (1.4× headroom) or batch (1.0×)
+  --model llama-3.1-8b \
+  --gpu h100_sxm \
+  --dtype fp8 \
+  --requests-per-day 50000 \
+  --isl 1024 \
+  --osl 256 \
+  --ttft-slo-ms 500 \
+  --traffic-class realtime
 ```
+
+Key flags:
+
+| Flag | What it controls |
+| --- | --- |
+| `--model` | Model id from `catalog/models.yaml` (e.g. `llama-3.1-8b`, `llama-3.3-70b`, `gpt-oss-20b`) |
+| `--gpu` | GPU SKU from `catalog/gpus.yaml` (e.g. `h100_sxm`, `h200_sxm`, `a100_80gb_sxm`, `l40s`) |
+| `--dtype` | Quantization: `fp16`, `bf16`, `fp8`, `int4` |
+| `--requests-per-day` | Daily request volume (or use `--avg-rps` or `--users + --prompts-per-user-per-day`) |
+| `--isl` | Input sequence length — tokens per request (your average prompt length) |
+| `--osl` | Output sequence length — tokens per response (your average completion length) |
+| `--ttft-slo-ms` | Time-to-first-token SLO in milliseconds |
+| `--traffic-class` | `realtime` (1.4× headroom) or `batch` (1.0×) |
 
 Sample output:
 
