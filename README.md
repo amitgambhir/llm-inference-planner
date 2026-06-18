@@ -42,23 +42,68 @@ Ships as a **web app** (Next.js + FastAPI, deployable on Vercel + Render) and as
 
 ---
 
-## 1. Quick start — no GPU needed
+## Prerequisites
+
+- **Python 3.10+**
+- No GPU required for capacity planning — the roofline model is pure math
 
 ```bash
+git clone https://github.com/your-org/llm-inference-planner.git
+cd llm-inference-planner
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-python planner/capacity.py \
-  --model llama-3.1-8b --gpu h100_sxm --dtype fp8 \
-  --requests-per-day 50000 --isl 1024 --osl 256 \
-  --ttft-slo-ms 500 --traffic-class realtime
 ```
 
-Output: replica count, confidence tier, TTFT estimate (ms), max concurrent sequences (KV budget), binding constraint (`compute` / `bandwidth` / `kv_budget`), and cost envelope.
+---
+
+## 1. Quick start — no GPU needed
+
+Run as a module from the project root (the `planner/` package uses relative imports):
+
+```bash
+python3 -m planner.capacity \
+  --model llama-3.1-8b \          # model id from catalog/models.yaml
+  --gpu h100_sxm \                # GPU SKU from catalog/gpus.yaml
+  --dtype fp8 \                   # quantization: fp16, bf16, fp8, int4
+  --requests-per-day 50000 \      # daily request volume
+  --isl 1024 \                    # input sequence length (tokens per request)
+  --osl 256 \                     # output sequence length (tokens per response)
+  --ttft-slo-ms 500 \             # time-to-first-token SLO in milliseconds
+  --traffic-class realtime        # realtime (1.4× headroom) or batch (1.0×)
+```
+
+Sample output:
+
+```text
+╔══════════════════════════════════════════════════════════╗
+║           LLM Inference Capacity Estimate                ║
+╚══════════════════════════════════════════════════════════╝
+  Model : Llama 3.1 8B  |  GPU: NVIDIA H100 SXM  |  tp=1
+
+── Sizing ──────────────────────────────────────────────────
+  Binding constraint        : PREFILL-BOUND
+  Base replicas             : 1
+  After headroom            : 2
+  Total GPUs                : 2  (2 replicas × tp)
+
+  ┌─────────────────────────────────────────────────┐
+  │  RECOMMENDED:  2 – 3 replicas                   │
+  │  Confidence  :  MEDIUM                          │
+  └─────────────────────────────────────────────────┘
+
+── TTFT Estimate ───────────────────────────────────────────
+  Total est.    : 20 ms  ✓ SLO met  (SLO=500 ms)
+
+── Cost (estimated) ────────────────────────────────────────
+  2 × H100 SXM × 24h × $3.0/hr = $144/day → $4,320/month
+```
+
+Add `--explain` to see the full sizing arithmetic (traffic normalization, KV budget, per-replica ceilings, replica math, cost).
 
 To compare multiple GPU/dtype configurations:
 
 ```bash
-python planner/compare.py --configs configs.json
+python3 -m planner.compare --configs configs.json
 ```
 
 ---
