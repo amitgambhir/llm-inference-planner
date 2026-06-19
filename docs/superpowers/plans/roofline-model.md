@@ -61,7 +61,7 @@ The binding constraint is reported explicitly so you know *why* you need the rep
 | `catalog/benchmarks_public.yaml` | citable public benchmark points (MLPerf, vendor perf overviews); used by `validate.fit()` to tune efficiency_constants.yaml; schema_version 2 with fit_role field |
 | `planner/efficiency_constants.yaml` | MFU base values by GPU arch + dtype, bandwidth efficiency base by memory type, model-size saturation constants (size_floor, size_scale), ISL saturation constants (isl_floor, isl_scale), MoE factor, engine_factor per serving engine (vllm=1.0 reference, trtllm=~1.3) |
 | `catalog/runtimes.yaml` | Runtime engine profiles (vLLM, TRT-LLM, SGLang, managed); reference engine designation; engine_factor (relative to vLLM=1.0) |
-| Scenario / CLI | requests_per_day (or avg_rps or users×prompts — resolved by `planner/intake.py` before `plan()` is called), peak_multiplier, ISL, OSL, TTFT SLO, dtype, tp, traffic_class, gpu_mem_util; optional: users (cross-cutting, unlocks $/user/month) |
+| Scenario / CLI | requests_per_day (or avg_rps or users×prompts — resolved by `planner/intake.py` before `plan()` is called), peak_multiplier, ISL, OSL, TTFT SLO, dtype, tp, traffic_class, gpu_mem_util; optional: users (cross-cutting, unlocks $/user/month), prefix_cache_len + prefix_cache_hit_rate (reduce effective prefill ISL; KV budget unchanged), max_num_seqs (scheduler batch cap) |
 
 **Dtype byte widths used throughout:**
 
@@ -107,12 +107,15 @@ Precedence when multiple modes are supplied: `requests_per_day` → `avg_rps` �
 ```
 avg_rps         = requests_per_day / 86,400
 peak_rps        = avg_rps × peak_multiplier
-input_tps_peak  = peak_rps × ISL    (tokens/s of prefill at peak)
-output_tps_peak = peak_rps × OSL    (tokens/s of decode at peak)
+effective_isl   = ISL − floor(prefix_cache_len × prefix_cache_hit_rate)   (= ISL when prefix cache not set)
+input_tps_peak  = peak_rps × effective_isl    (tokens/s of prefill at peak)
+output_tps_peak = peak_rps × OSL              (tokens/s of decode at peak)
 ```
 
 The planner sizes for **peak**, not average.
 `peak_multiplier` (default 3×) models the ratio of peak hour to average hour.
+
+**Prefix cache** (`--prefix-cache-len`, `--prefix-cache-hit-rate`): when a system prompt or shared context is cached, those tokens do not need to be recomputed. `effective_isl` captures the tokens that must actually be prefilled. The KV budget (Stage 2) always uses the full `ISL` — cached tokens still occupy VRAM so they remain resident for reuse. When prefix cache is not configured, `effective_isl = ISL`.
 
 ---
 
@@ -171,6 +174,20 @@ in one replica. If it drops below 4, the planner emits a warning.
 
 **Hard error:** If weights alone do not fit in usable memory at the chosen `tp`,
 the planner raises `CatalogError` rather than emitting a nonsense number.
+
+---
+
+## Stage 2b — Scheduler batch cap (`--max-num-seqs`)
+
+vLLM's `--max-num-seqs` flag limits how many sequences the scheduler will run concurrently, independently of available KV cache VRAM. When set, the planner applies:
+
+```
+effective_max_seqs = min(max_concurrent_seqs, max_num_seqs)
+```
+
+`effective_max_seqs` replaces `max_concurrent_seqs` in all downstream calculations: `eff_batch` (Stage 5b), `replicas_concurrency` (Stage 6). The KV budget itself is unchanged — the cap is a scheduler policy, not a memory constraint.
+
+When `max_num_seqs ≥ max_concurrent_seqs` (or `--max-num-seqs` is not set), this stage is a no-op.
 
 ---
 
@@ -337,12 +354,14 @@ Both ceilings scale linearly with `tp`.
 **Effective batch:**
 
 ```
-eff_batch = max(1, floor(max_concurrent_seqs × batch_efficiency))
+eff_batch = max(1, floor(effective_max_seqs × batch_efficiency))
 ```
 
 `batch_efficiency = 0.70` (default). vLLM continuous batching is never 100% full
 in steady state — requests arrive and complete asynchronously. 0.70 is the
 empirically-observed fill fraction. Sizing at 100% would under-provision by ~18%.
+
+`effective_max_seqs = min(max_concurrent_seqs, max_num_seqs)` (see Stage 2b). When `--max-num-seqs` is tighter than the KV budget, it is the binding limit on batch size.
 
 **Average KV context during decode:**
 
@@ -429,6 +448,8 @@ Three independent constraints produce three replica counts; the binding one wins
 replicas_prefill = ceil(input_tps_peak / prefill_ceiling_per_replica)
 ```
 
+`input_tps_peak = peak_rps × effective_isl` — already reduced by prefix caching at Stage 1.
+
 ### Decode-driven replicas
 
 ```
@@ -438,11 +459,11 @@ replicas_decode = ceil(output_tps_peak / decode_ceiling_per_replica)
 ### Concurrency-driven replicas (Little's Law)
 
 ```
-ttft_rough_s     = ISL / prefill_ceiling
+ttft_rough_s     = effective_isl / prefill_ceiling
 itl_s            = eff_batch / decode_ceiling        (inter-token latency at eff_batch)
 avg_latency_s    = ttft_rough_s + OSL × itl_s
 peak_concurrent  = peak_rps × avg_latency_s          (Little's Law: L = λW)
-replicas_concurrency = ceil(peak_concurrent / max_concurrent_seqs)
+replicas_concurrency = ceil(peak_concurrent / effective_max_seqs)
 ```
 
 `itl_s` uses `eff_batch` (not `max_concurrent_seqs`) because `decode_ceiling` was
@@ -504,7 +525,7 @@ service times) applied per replica.
 
 ```
 rho             = min(input_tps_peak / (replicas × prefill_ceiling), 0.94)
-ttft_compute_s  = ISL / prefill_ceiling_per_replica
+ttft_compute_s  = effective_isl / prefill_ceiling_per_replica
 queue_wait_s    = ttft_compute_s × rho / (1 − rho)
 ttft_ms         = (ttft_compute_s + queue_wait_s) × 1000
 ```
@@ -637,7 +658,7 @@ python catalog/phase_c_refit.py
 | Gap | Impact | Mitigation |
 |---|---|---|
 | **USL / TP communication overhead** | NVLink within-node (<5% at tp≤8); InfiniBand cross-node 15–30% | Use anchors from target hardware; add USL correction when tp>8 |
-| **Prefix caching hit rate** | High hit rate reduces effective ISL; model assumes 0% hits | Use `isl_eff = ISL × (1 − hit_rate)` as the ISL input when hit rate is known |
+| **Prefix caching hit rate** | Implemented via `--prefix-cache-len` + `--prefix-cache-hit-rate`; reduces effective prefill ISL; KV budget uses full ISL | Set both flags to model your system prompt cache |
 | **Chunked prefill** | Chunks ISL > 4096 into smaller pieces; changes TTFT profile | Planner emits a warning; TTFT is a worst-case without chunking |
 | **MoE routing imbalance** | Expert load uneven across ranks; effective FLOPS per token varies | MoE coverage fraction assumes uniform routing; add imbalance factor for skewed workloads |
 | **Speculative decoding** | Can multiply decode throughput by acceptance rate | Not modelled; requires OSL + acceptance rate adjustments |
@@ -784,8 +805,14 @@ kv_shard_factor = min(tp, num_kv_heads)
 # KV cache budget (TP group)
 kv_budget = (vram × gpu_mem_util − w_bytes − 0.5 GB) × kv_shard_factor
 
-# Max concurrent sequences
+# Max concurrent sequences (from KV budget; always uses full ISL)
 max_seqs = floor(kv_budget / (kv_bpt × (ISL + OSL)))
+
+# Effective ISL for prefill (prefix cache reduces compute, not KV storage)
+effective_isl = ISL − floor(prefix_cache_len × prefix_cache_hit_rate)   (= ISL when not set)
+
+# Effective max sequences (scheduler cap; = max_seqs when --max-num-seqs not set)
+effective_max_seqs = min(max_seqs, max_num_seqs)
 
 # Efficiency curves (planner/efficiency.py, constants in efficiency_constants.yaml)
 mfu         = clamp(base × f_size × f_isl × f_moe,  low=0.08,  high=base)
@@ -805,7 +832,7 @@ bw_tps      = ISL × BW_gbps × 1e9 × bw_eff_prefill × tp / (active_params × 
 prefill_tps = min(compute_tps, bw_tps)
 
 # Effective batch
-eff_batch = max(1, floor(max_seqs × 0.70))
+eff_batch = max(1, floor(effective_max_seqs × 0.70))
 
 # Average KV context
 avg_ctx = ISL + OSL // 2
@@ -826,11 +853,11 @@ compute_tps     = TFLOPS × 1e12 × mfu × tp / (2 × active_params)
 decode_tps      = min(bw_tps, compute_tps)
 
 # Sizing
-replicas_prefill     = ceil(peak_rps × ISL / prefill_tps)
+replicas_prefill     = ceil(peak_rps × effective_isl / prefill_tps)
 replicas_decode      = ceil(peak_rps × OSL / decode_tps)
 itl_s                = eff_batch / decode_tps
-avg_latency_s        = ISL/prefill_tps + OSL × itl_s
-replicas_concurrency = ceil(peak_rps × avg_latency_s / max_seqs)
+avg_latency_s        = effective_isl/prefill_tps + OSL × itl_s
+replicas_concurrency = ceil(peak_rps × avg_latency_s / effective_max_seqs)
 replicas             = ceil(max(...) × headroom)
 total_gpus           = replicas × tp
 
@@ -838,8 +865,8 @@ total_gpus           = replicas × tp
 tpot_ms = eff_batch / decode_tps × 1000
 
 # TTFT (M/M/1)
-rho      = min(peak_rps × ISL / (replicas × prefill_tps), 0.94)
-ttft_ms  = (ISL / prefill_tps) × (1 / (1 − rho)) × 1000
+rho      = min(peak_rps × effective_isl / (replicas × prefill_tps), 0.94)
+ttft_ms  = (effective_isl / prefill_tps) × (1 / (1 − rho)) × 1000
 
 # Confidence band
 replicas_low  = max(1, ceil(replicas × (1 − band_factor)))

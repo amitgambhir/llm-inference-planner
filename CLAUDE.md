@@ -53,7 +53,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | `catalog/compute_engine_factor.py` | Phase C helper — prints per-pair TRT-LLM/vLLM ratio table + median to paste into `efficiency_constants.yaml` |
 | `catalog/phase_c_refit.py` | Phase C automation — pins `engine_factor`, narrows `PARAM_BOUNDS`, runs full refit, prints CV + sensitivity + suggested test targets |
 | `planner/intake.py` | Multi-mode demand resolver — `DemandSpec`, `WorkloadError`, `resolve_demand()`; three input modes (requests_per_day / avg_rps / users×prompts); `users` passes through to cost layer |
-| `planner/capacity.py` | Roofline model — prefill (compute-bound) + decode (bandwidth-bound); `plan()` accepts `users`; `CapacityEstimate` carries `users`, `gpu_mem_gb`, `headroom_factor`; CLI: `--avg-rps`, `--users`, `--prompts-per-user-per-day`, `--explain` |
+| `planner/capacity.py` | Roofline model — prefill (compute-bound) + decode (bandwidth-bound); `plan()` accepts `users`, `prefix_cache_len`, `prefix_cache_hit_rate`, `max_num_seqs`; `CapacityEstimate` carries `users`, `gpu_mem_gb`, `headroom_factor`; CLI: `--avg-rps`, `--users`, `--prompts-per-user-per-day`, `--prefix-cache-len`, `--prefix-cache-hit-rate`, `--max-num-seqs`, `--explain` |
 | `planner/catalog.py` | GPU/model catalog loader — reads `catalog/gpus.yaml` + `catalog/models.yaml` |
 | `planner/cost.py` | Cost envelope from catalog pricing; `CostVariant` carries `cost_per_user_per_month` (populated when `estimate.users` is set) |
 | `planner/benchmark_plan.py` | Ordered test matrix: ISL sweep, concurrency sweep, precision compare, KV check |
@@ -100,11 +100,13 @@ Precedence: `requests_per_day` → `avg_rps` → `users × prompts`. Multiple so
 
 `capacity.py` models two phases independently:
 
-- **Prefill** (compute-bound): `prefill_time_ms = (isl × params × 2) / (peak_flops × mfu × tp)`
+- **Prefill** (compute-bound): `prefill_time_ms = (effective_isl × params × 2) / (peak_flops × mfu × tp)`
 - **Decode** (bandwidth-bound): `decode_time_ms = (params × bytes_per_param) / (memory_bandwidth × mfu × tp)`
 - TTFT estimate = max(prefill_time, decode_time) × peak_multiplier
-- `max_concurrent_seqs` (KV budget): `floor(vram_bytes × kv_fraction / kv_bytes_per_seq)`
-- Replicas = `ceil(requests_per_day × peak_multiplier / (seconds_per_day / ttft_secs) / max_concurrent_seqs)`
+- `max_concurrent_seqs` (KV budget): `floor(vram_bytes × kv_fraction / kv_bytes_per_seq)` — always uses full ISL
+- `effective_max_seqs` = `min(max_concurrent_seqs, max_num_seqs)` — caps scheduler batch when `--max-num-seqs` is set
+- `effective_isl` = `isl − floor(prefix_cache_len × prefix_cache_hit_rate)` — reduces prefill demand when `--prefix-cache-len` is set; KV budget always uses full ISL
+- Replicas = `ceil(requests_per_day × peak_multiplier / (seconds_per_day / ttft_secs) / effective_max_seqs)`
 
 ### Confidence rubric
 
@@ -195,6 +197,10 @@ Each quality sidecar (`results/quality/<tag>.json`) carries a `latency_tag` back
 **Engine confound policy — never mix TRT-LLM throughput into vLLM estimates.** TRT-LLM consistently runs 1.5–2× faster than vLLM on identical hardware. If TRT-LLM `total_output_tps` numbers were used as `level` points to calibrate the efficiency constants, all subsequent vLLM estimates would be systematically over-predicted. The engine field and `fit_role: shape` tag enforce this separation at the data level.
 
 **`fit_roles` default is a tuple, not None.** `report()` signature is `fit_roles: Optional[tuple] = ("level",)`. Passing `fit_roles=None` means "no filter — return all points". The tuple default (not `None`) ensures the common case (level-only report) requires no argument, while "all points" requires an explicit `None`.
+
+**`--prefix-cache-len` reduces prefill compute but not KV budget.** `plan()` computes `effective_isl = isl − floor(prefix_cache_len × hit_rate)` and uses it for `normalize_traffic()`, `prefill_ceiling()`, `ttft_estimate()`, and `size_replicas()`. `kv_budget()` always receives the full `isl` — cached tokens still occupy KV cache VRAM so they are available for reuse. The assumption label in the output shows both the cached token count and the effective ISL.
+
+**`--max-num-seqs` caps `effective_max_seqs`, not `kv.max_concurrent_seqs`.** The KV budget is computed from VRAM and is unchanged. `effective_max_seqs = min(kv.max_concurrent_seqs, max_num_seqs)` is applied after `kv_budget()` and flows into `eff_batch` and `replicas_concurrency`. When `max_num_seqs` is the binding limit (not KV budget), the assumptions section reports "scheduler cap is the binding limit".
 
 ## Deployment (Vercel + Render)
 

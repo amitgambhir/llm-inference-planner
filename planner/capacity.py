@@ -461,6 +461,9 @@ def plan(
     runtime: str = "vllm",
     batch_efficiency: float = 0.70,
     users: Optional[int] = None,
+    prefix_cache_len: int = 0,
+    prefix_cache_hit_rate: float = 0.0,
+    max_num_seqs: Optional[int] = None,
 ) -> CapacityEstimate:
     """Full planning pipeline.  Returns a CapacityEstimate with range + confidence.
 
@@ -480,11 +483,30 @@ def plan(
         )
     gpu.peak_flops.get(dtype)   # raises CatalogError early if GPU doesn't support this dtype
 
+    # ── 0b. Prefix cache: reduce effective ISL for prefill compute only ───
+    # Cached tokens skip recomputation but still occupy KV cache VRAM, so
+    # kv_budget() always uses the full ISL.
+    prefix_cached_tokens = 0
+    effective_isl = isl
+    if prefix_cache_len > 0 and prefix_cache_hit_rate > 0.0:
+        prefix_cached_tokens = int(min(prefix_cache_len, isl) * prefix_cache_hit_rate)
+        effective_isl = max(1, isl - prefix_cached_tokens)
+
     # ── 1. Traffic ────────────────────────────────────────────────────────
-    traffic = normalize_traffic(requests_per_day, peak_multiplier, isl, osl)
+    # input_tps uses effective_isl — cached tokens don't drive prefill compute.
+    traffic = normalize_traffic(requests_per_day, peak_multiplier, effective_isl, osl)
 
     # ── 2. KV budget ──────────────────────────────────────────────────────
+    # Always uses full ISL — prefix KV must remain resident for reuse.
     kv = kv_budget(gpu, model, dtype, isl, osl, gpu_mem_util, tp)
+
+    # ── 2b. Apply --max-num-seqs cap ─────────────────────────────────────
+    # vLLM's --max-num-seqs limits the scheduler batch size independently of
+    # VRAM capacity.  The KV budget remains unchanged; only the effective
+    # concurrency for eff_batch and replicas_concurrency is reduced.
+    effective_max_seqs = kv.max_concurrent_seqs
+    if max_num_seqs is not None:
+        effective_max_seqs = min(kv.max_concurrent_seqs, max_num_seqs)
 
     # ── 3. Confidence + calibrated MFU / bw_eff ───────────────────────────
     conf = confidence(model, gpu, dtype, isl, osl, kv.max_concurrent_seqs)
@@ -503,12 +525,13 @@ def plan(
         eff_source = "curve"
 
     # ── 4. Ceilings ───────────────────────────────────────────────────────
-    pfill_tps = prefill_ceiling(gpu, model, dtype, isl, mfu, bw_eff_base, tp)
+    pfill_tps = prefill_ceiling(gpu, model, dtype, effective_isl, mfu, bw_eff_base, tp)
 
     avg_ctx = isl + osl // 2        # average context mid-generation
 
     # Effective batch: continuous batching is never 100% full in steady state.
-    eff_batch = max(1, int(kv.max_concurrent_seqs * batch_efficiency))
+    # Respects --max-num-seqs cap when set.
+    eff_batch = max(1, int(effective_max_seqs * batch_efficiency))
 
     # kv_ratio: reported as a diagnostic; KV bytes are already counted once in
     # decode_ceiling's bytes_per_step — bw_eff_decode must NOT apply a second penalty.
@@ -525,7 +548,7 @@ def plan(
     decode_tps = decode_ceiling(gpu, model, dtype, eff_batch, avg_ctx, decode_bw_eff, tp, mfu=mfu)
 
     # ── 5. Sizing ─────────────────────────────────────────────────────────
-    sz = size_replicas(traffic, pfill_tps, decode_tps, kv.max_concurrent_seqs, tp, traffic_class, isl, osl, eff_batch=eff_batch)
+    sz = size_replicas(traffic, pfill_tps, decode_tps, effective_max_seqs, tp, traffic_class, effective_isl, osl, eff_batch=eff_batch)
 
     # ── 6. Range widening by confidence ───────────────────────────────────
     band = conf.band_factor
@@ -536,7 +559,7 @@ def plan(
     per_replica_prefill = pfill_tps  # already TP-group throughput from prefill_ceiling
     # Utilization at peak with the sized fleet
     rho = (traffic.input_tps_peak / (sz["replicas"] * per_replica_prefill))
-    ttft = ttft_estimate(gpu, model, dtype, isl, per_replica_prefill, rho, ttft_slo_ms)
+    ttft = ttft_estimate(gpu, model, dtype, effective_isl, per_replica_prefill, rho, ttft_slo_ms)
 
     # ── 8. Warnings ───────────────────────────────────────────────────────
     if kv.max_concurrent_seqs < LOW_KV_CONCURRENCY_THRESHOLD:
@@ -596,13 +619,24 @@ def plan(
         f"GPU memory utilization cap: {gpu_mem_util:.0%}",
         f"MFU (prefill): {mfu:.2f} (from {eff_source})",
         f"Bandwidth efficiency (decode): {decode_bw_eff:.2f} (from {eff_source}, KV ratio={kv_ratio:.1f} → {kv_regime})",
-        f"Batch efficiency: {batch_efficiency:.0%} of max_concurrent_seqs ({eff_batch}/{kv.max_concurrent_seqs} seqs)",
+        f"Batch efficiency: {batch_efficiency:.0%} of max_concurrent_seqs ({eff_batch}/{effective_max_seqs} seqs)",
         f"Traffic headroom ({traffic_class}): {sz['headroom_factor']:.2f}x",
         f"Tensor parallelism: tp={tp} ({sz['replicas']} replicas × {tp} GPUs = {sz['replicas'] * tp} total GPUs)",
         f"Fixed overhead per GPU: {FIXED_OVERHEAD_BYTES/1e9:.0f} GB",
         f"Average context for decode sizing: {isl + osl // 2} tokens (ISL + OSL/2)",
         "TTFT queue model: M/M/1 heuristic — must be validated on live GPU.",
     ]
+    if prefix_cached_tokens > 0:
+        assumptions.append(
+            f"Prefix cache: {prefix_cache_len} token prefix × {prefix_cache_hit_rate:.0%} hit rate "
+            f"→ {prefix_cached_tokens} tokens skipped per request → effective prefill ISL {effective_isl} "
+            f"(KV budget still sized for full ISL {isl})"
+        )
+    if max_num_seqs is not None and max_num_seqs < kv.max_concurrent_seqs:
+        assumptions.append(
+            f"--max-num-seqs {max_num_seqs} caps scheduler batch "
+            f"(KV budget allows {kv.max_concurrent_seqs} seqs; scheduler cap is the binding limit)"
+        )
 
     return CapacityEstimate(
         traffic=traffic,
@@ -754,6 +788,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--traffic-class", default="realtime",
                    choices=["realtime", "mixed", "batch"])
     p.add_argument("--gpu-mem-util", type=float, default=0.90)
+    p.add_argument("--prefix-cache-len", type=int, default=0, metavar="TOKENS",
+                   help="Shared prefix length in tokens (e.g. system prompt). "
+                        "Reduces prefill compute; KV budget is unchanged.")
+    p.add_argument("--prefix-cache-hit-rate", type=float, default=0.0, metavar="RATE",
+                   help="Fraction of requests that hit the prefix cache (0.0–1.0, default 0)")
+    p.add_argument("--max-num-seqs", type=int, default=None, metavar="N",
+                   help="Cap on concurrent sequences per replica (mirrors vLLM --max-num-seqs). "
+                        "Reduces effective batch size and concurrency-driven replica count.")
     p.add_argument("--json", action="store_true", help="Emit JSON instead of human output")
     p.add_argument("--explain", action="store_true",
                    help="Append napkin-math sizing walk to output")
@@ -823,6 +865,9 @@ def main(argv: list[str] | None = None) -> None:
             gpu_mem_util=args.gpu_mem_util,
             runtime=args.runtime,
             users=users,
+            prefix_cache_len=args.prefix_cache_len,
+            prefix_cache_hit_rate=args.prefix_cache_hit_rate,
+            max_num_seqs=args.max_num_seqs,
         )
     except CatalogError as e:
         print(f"Planning error: {e}", file=sys.stderr)

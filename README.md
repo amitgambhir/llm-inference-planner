@@ -84,6 +84,11 @@ Key flags:
 | `--osl` | Output sequence length — tokens per response (your average completion length) |
 | `--ttft-slo-ms` | Time-to-first-token SLO in milliseconds |
 | `--traffic-class` | `realtime` (1.4× headroom) or `batch` (1.0×) |
+| `--peak-multiplier` | Peak-to-average traffic ratio (default 3×; try 8–10× for business-hours concentrated workloads) |
+| `--tp` | Tensor parallel degree — each replica spans this many GPUs; total GPUs = replicas × tp |
+| `--prefix-cache-len` | Shared prefix length in tokens (e.g. system prompt length); reduces prefill compute demand, KV budget is unchanged |
+| `--prefix-cache-hit-rate` | Fraction of requests that hit the prefix cache (0.0–1.0, default 0) |
+| `--max-num-seqs` | vLLM `--max-num-seqs` scheduler cap; limits effective batch size and concurrency replica count independently of KV budget |
 
 Sample output:
 
