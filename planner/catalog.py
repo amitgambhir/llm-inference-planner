@@ -116,7 +116,7 @@ class Anchor(BaseModel):
     dtype: str
     isl: int
     osl: int
-    concurrency: int
+    concurrency: float                       # float: sub-1 values valid for multi-replica ÷ N
     measured_ttft_p50_ms: Optional[float] = None
     measured_ttft_p95_ms: Optional[float] = None
     measured_throughput_tok_s: Optional[float] = None
@@ -124,6 +124,9 @@ class Anchor(BaseModel):
     source: str = ""
     # Optional field present in some anchor rows (mns sweep)
     max_num_seqs: Optional[int] = None
+    # Optional prefix-caching fields
+    prefix_cache_hit_rate: Optional[float] = None   # observed cache hit rate (0.0–1.0)
+    effective_isl: Optional[int] = None             # isl × (1 – hit_rate); use for MFU back-calc
 
 
 # ---------------------------------------------------------------------------

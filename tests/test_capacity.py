@@ -87,8 +87,8 @@ def test_golden_prefill_bound(golden_estimate):
 
 
 def test_golden_confidence_default(golden_estimate):
-    # No H100 / gpt-oss-20b anchor seeded → DEFAULT (was "low" before curve validation)
-    assert golden_estimate.confidence == "default"
+    # h200_sxm/bf16 anchors exist for gpt-oss-20b → cross-GPU evidence upgrades to MEDIUM
+    assert golden_estimate.confidence == "medium"
 
 
 def test_golden_replica_range_low_lt_high(golden_estimate):
@@ -102,8 +102,9 @@ def test_golden_replica_range_wide(golden_estimate):
 
 
 def test_golden_validate_warning_present(golden_estimate):
+    # Cross-GPU anchor warning replaces the old "no live GPU data" message
     combined = " ".join(golden_estimate.warnings).lower()
-    assert "validate" in combined and ("live gpu" in combined or "live" in combined)
+    assert "validate" in combined or "different gpu" in combined
 
 
 def test_golden_chunked_prefill_warning_present(golden_estimate):
@@ -595,9 +596,10 @@ def test_confidence_high_for_seeded_l4_anchor():
 
 
 def test_confidence_default_for_unknown_model_gpu():
-    model = get_model("gpt-oss-20b")
-    gpu = get_gpu("h100_sxm")
-    conf = confidence(model, gpu, "mxfp4", 9000, 500, 100)
+    # Use a model+GPU with no anchors to exercise the pure DEFAULT tier
+    model = get_model("qwen3-30b-a3b")
+    gpu = get_gpu("l40s")
+    conf = confidence(model, gpu, "bf16", 9000, 500, 100)
     assert conf.level == "default"
     assert conf.anchor_matched is False
 

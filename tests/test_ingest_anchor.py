@@ -91,9 +91,10 @@ def _make_result_json(
 
 
 def test_confidence_result_has_band_factor():
-    model = get_model("gpt-oss-20b")
-    gpu = get_gpu("h100_sxm")
-    result = confidence(model, gpu, "mxfp4", 9000, 500, 10)
+    # Use a model/GPU combo with no anchors to exercise the DEFAULT tier
+    model = get_model("qwen3-30b-a3b")
+    gpu = get_gpu("l40s")
+    result = confidence(model, gpu, "bf16", 9000, 500, 10)
     assert hasattr(result, "band_factor")
     assert result.band_factor == 0.25  # DEFAULT → 25%
 
