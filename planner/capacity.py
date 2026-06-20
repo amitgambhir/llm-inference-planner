@@ -509,7 +509,10 @@ def plan(
         effective_max_seqs = min(kv.max_concurrent_seqs, max_num_seqs)
 
     # ── 3. Confidence + calibrated MFU / bw_eff ───────────────────────────
-    conf = confidence(model, gpu, dtype, isl, osl, kv.max_concurrent_seqs)
+    # Use eff_batch (steady-state expected batch) as the scenario concurrency for
+    # anchor matching — KV budget is the capacity ceiling, not the operating point.
+    eff_batch = max(1, int(effective_max_seqs * batch_efficiency))
+    conf = confidence(model, gpu, dtype, isl, osl, eff_batch)
 
     # Precedence: measured anchor > regime-aware efficiency curve > hard floor.
     # Anchors win unconditionally (they're from a real GPU measurement).
@@ -528,10 +531,7 @@ def plan(
     pfill_tps = prefill_ceiling(gpu, model, dtype, effective_isl, mfu, bw_eff_base, tp)
 
     avg_ctx = isl + osl // 2        # average context mid-generation
-
-    # Effective batch: continuous batching is never 100% full in steady state.
-    # Respects --max-num-seqs cap when set.
-    eff_batch = max(1, int(effective_max_seqs * batch_efficiency))
+    # eff_batch already computed above (before confidence call, for anchor matching)
 
     # kv_ratio: reported as a diagnostic; KV bytes are already counted once in
     # decode_ceiling's bytes_per_step — bw_eff_decode must NOT apply a second penalty.
