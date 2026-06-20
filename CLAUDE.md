@@ -46,7 +46,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | `catalog/gpus.yaml` | Peak FLOPS, memory bandwidth, VRAM, arch, memory_type, MFU defaults for each GPU SKU |
 | `catalog/models.yaml` | Parameter count, hidden dim, layers, KV heads; includes llama-3.3-70b and llama-4-maverick |
 | `catalog/costs.yaml` | On-demand + 1-yr reserved cost per GPU-hour |
-| `catalog/anchors.yaml` | Measured throughput anchors; written by `ingest_anchor.py` |
+| `catalog/anchors.yaml` | Measured throughput anchors; written by `ingest_anchor.py`; `concurrency: float` (sub-1 valid for multi-replica ÷ N); optional: `prefix_cache_hit_rate`, `effective_isl` (prefix-caching runs), `max_num_seqs` |
 | `catalog/benchmarks_public.yaml` | Public benchmark points (schema v2) — vLLM `level`, TRT-LLM `shape`, distribution `validate`, `sanity` points; Phase B stubs (measured: null) pre-staged |
 | `catalog/runtimes.yaml` | Supported inference engines with display names and engine confound notes |
 | `catalog/runpod_phase_b.sh` | Phase B runbook — copy to RunPod 1×H100-SXM pod; runs 5 ISL/OSL offline benchmarks and streams `output_tps` per pair |
@@ -57,7 +57,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | `planner/catalog.py` | GPU/model catalog loader — reads `catalog/gpus.yaml` + `catalog/models.yaml` |
 | `planner/cost.py` | Cost envelope from catalog pricing; `CostVariant` carries `cost_per_user_per_month` (populated when `estimate.users` is set) |
 | `planner/benchmark_plan.py` | Ordered test matrix: ISL sweep, concurrency sweep, precision compare, KV check |
-| `planner/confidence.py` | THREE-tier rubric: HIGH (±10%), MEDIUM (±20%), DEFAULT (±25%) |
+| `planner/confidence.py` | THREE-tier rubric: HIGH (±10%), MEDIUM (±20%), DEFAULT (±25%); `HIGH_CONCURRENCY_RATIO=10.0` ratio gate; `plan()` passes `eff_batch` (not KV ceiling) as scenario concurrency |
 | `planner/efficiency.py` | Regime-aware efficiency curves: `mfu_prefill` (size + ISL + MoE) and `bw_eff_decode` (batch amortization only; KV counted once in `decode_ceiling`) |
 | `planner/efficiency_constants.yaml` | Tunable constants for efficiency curves; updated by `validate.fit()` |
 | `planner/explain.py` | Napkin-math explainer — `render_napkin_math(est, cost=None)`; six sections; every number read from `CapacityEstimate`/`CostEstimate`, no hardcoded constants |
@@ -110,15 +110,17 @@ Precedence: `requests_per_day` → `avg_rps` → `users × prompts`. Multiple so
 
 ### Confidence rubric
 
-`confidence.py` assigns three tiers based on `geometry_source` and whether anchor data exists:
+`confidence.py` assigns three tiers based on anchor matching, ISL distance, concurrency ratio, and `geometry_source`:
 
-- `geometry_source="measured"` + anchor present → starts at HIGH
-- `geometry_source="measured"` + no anchor → MEDIUM
-- `geometry_source="estimated"` → always downgrades one level from above
+- Exact `(model, gpu, dtype)` anchor + ISL within ±20% + concurrency ratio ≤ 10× → **HIGH** (±10%)
+- Exact `(model, gpu, dtype)` anchor + ISL beyond ±20% **or** concurrency ratio > 10× → **MEDIUM** (±20%)
+- Same model, different GPU/dtype anchor → **MEDIUM** (±20%)
+- No anchor for this model → **DEFAULT** (±25%)
+- `geometry_source="estimated"` → always downgrades one level (HIGH→MEDIUM, MEDIUM→DEFAULT)
 
-Band widths: HIGH ±10%, MEDIUM ±20%, DEFAULT ±25%.
+**Concurrency gate (`HIGH_CONCURRENCY_RATIO = 10.0`):** `plan()` passes `eff_batch` (steady-state operating batch = `floor(effective_max_seqs × batch_efficiency)`) to `confidence()` — not the KV-cache capacity ceiling. This prevents a single low-RPS single-replica anchor (e.g. c=0.6) from granting HIGH calibration to plans that operate at high concurrency (e.g. eff_batch=59, ratio=98×). The gate is ratio-based (`max(a,b)/min(a,b)`) rather than normalized because normalized distance caps at 1.0 and cannot distinguish c=0.6→59 (0.99) from c=10→59 (0.83).
 
-The third tier is named `DEFAULT` (not `LOW`) — it is the baseline for any estimate that hasn't been upgraded by measured geometry or anchor data. The band tightened from ±50% to ±25% as the roofline model was calibrated against public benchmarks via `validate.fit()`.
+The third tier is named `DEFAULT` (not `LOW`) — it is the baseline for any estimate that hasn't been upgraded by anchor data. The band tightened from ±50% to ±25% as the roofline model was calibrated against public benchmarks via `validate.fit()`.
 
 ### create_app() factory isolation
 
@@ -201,6 +203,8 @@ Each quality sidecar (`results/quality/<tag>.json`) carries a `latency_tag` back
 **`--prefix-cache-len` reduces prefill compute but not KV budget.** `plan()` computes `effective_isl = isl − floor(prefix_cache_len × hit_rate)` and uses it for `normalize_traffic()`, `prefill_ceiling()`, `ttft_estimate()`, and `size_replicas()`. `kv_budget()` always receives the full `isl` — cached tokens still occupy KV cache VRAM so they are available for reuse. The assumption label in the output shows both the cached token count and the effective ISL.
 
 **`--max-num-seqs` caps `effective_max_seqs`, not `kv.max_concurrent_seqs`.** The KV budget is computed from VRAM and is unchanged. `effective_max_seqs = min(kv.max_concurrent_seqs, max_num_seqs)` is applied after `kv_budget()` and flows into `eff_batch` and `replicas_concurrency`. When `max_num_seqs` is the binding limit (not KV budget), the assumptions section reports "scheduler cap is the binding limit".
+
+**`eff_batch` (not KV ceiling) is the scenario concurrency passed to `confidence()`.** `plan()` computes `eff_batch = max(1, floor(effective_max_seqs × batch_efficiency))` before calling `confidence()`. This is the expected steady-state operating batch, not the KV-cache capacity ceiling. Using the KV ceiling would let single-replica low-RPS anchors (e.g. c=0.6) grant HIGH confidence to plans that run at high concurrent load (eff_batch may be tens or hundreds). The `HIGH_CONCURRENCY_RATIO = 10.0` gate in `confidence.py` enforces: `max(anchor.c, eff_batch) / min(anchor.c, eff_batch) ≤ 10` for HIGH to be awarded.
 
 ## Deployment (Vercel + Render)
 
