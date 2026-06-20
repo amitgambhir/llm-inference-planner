@@ -81,5 +81,146 @@ l4:
   default_bw_efficiency_decode: 0.65
   # ^ This card backs the seeded anchors in anchors.yaml (real L4/FP8 validation run).
 
-# To add e.g. B200: same shape, with native FP4 — mxfp4 would carry its own (higher) number,
-# not track fp8. MI300X (CDNA3, 192GB HBM3, ~5.3 TB/s) also fits this schema.
+h20:
+  display_name: "NVIDIA H20"
+  arch: hopper
+  memory_type: hbm
+  mem_gb: 96                           # HBM3 — export-controlled H100 variant
+  hbm_bandwidth_gbps: 4000             # 4.0 TB/s
+  peak_flops:                          # compute-capped for export compliance
+    fp16: 148
+    bf16: 148
+    fp8: 296
+    mxfp4: 296                         # Hopper: no native FP4; runs via FP8 path
+  default_mfu_prefill: 0.35            # lower than H100 due to compute cap
+  default_bw_efficiency_decode: 0.70
+
+b100:
+  display_name: "NVIDIA B100"
+  arch: blackwell
+  memory_type: hbm
+  mem_gb: 192                          # HBM3e
+  hbm_bandwidth_gbps: 8000             # 8.0 TB/s
+  peak_flops:
+    fp16: 1750
+    bf16: 1750
+    fp8: 3500
+    mxfp4: 3500                        # Blackwell native FP4; true mxfp4 ceiling higher — calibrate with anchor
+  default_mfu_prefill: 0.42
+  default_bw_efficiency_decode: 0.70
+
+b200:
+  display_name: "NVIDIA B200"
+  arch: blackwell
+  memory_type: hbm
+  mem_gb: 192                          # HBM3e
+  hbm_bandwidth_gbps: 8000             # 8.0 TB/s
+  peak_flops:
+    fp16: 2250
+    bf16: 2250
+    fp8: 4500
+    mxfp4: 4500                        # native FP4 TFLOPS higher; calibrate with anchor
+  default_mfu_prefill: 0.44
+  default_bw_efficiency_decode: 0.70
+
+b300:
+  display_name: "NVIDIA B300"
+  arch: blackwell
+  memory_type: hbm
+  mem_gb: 288                          # HBM3e
+  hbm_bandwidth_gbps: 10000            # 10.0 TB/s
+  peak_flops:
+    fp16: 3000
+    bf16: 3000
+    fp8: 6000
+    mxfp4: 6000
+  default_mfu_prefill: 0.44
+  default_bw_efficiency_decode: 0.70
+
+b30a:
+  display_name: "NVIDIA B30A"
+  arch: blackwell
+  memory_type: hbm
+  mem_gb: 120                          # HBM3
+  hbm_bandwidth_gbps: 4000             # 4.0 TB/s
+  peak_flops:
+    fp16: 1500
+    bf16: 1500
+    fp8: 3000
+    mxfp4: 3000
+  default_mfu_prefill: 0.40
+  default_bw_efficiency_decode: 0.70
+
+# AMD — cdna2/cdna3/cdna4 arch types. Efficiency curves fall back to
+# default_mfu_prefill (no calibrated MFU_BASE entries yet). Lower realized
+# MFU reflects ROCm/vLLM overhead vs CUDA at equivalent batch size.
+
+mi250x:
+  display_name: "AMD MI250X"
+  arch: cdna2
+  memory_type: hbm
+  mem_gb: 128                          # HBM2e
+  hbm_bandwidth_gbps: 3200             # 3.2 TB/s
+  peak_flops:                          # CDNA2: no native FP8 or FP4; all dtypes use BF16 path
+    fp16: 383
+    bf16: 383
+    fp8: 383
+    mxfp4: 383
+  default_mfu_prefill: 0.22
+  default_bw_efficiency_decode: 0.65
+
+mi300x:
+  display_name: "AMD MI300X"
+  arch: cdna3
+  memory_type: hbm
+  mem_gb: 192                          # HBM3
+  hbm_bandwidth_gbps: 5300             # 5.3 TB/s
+  peak_flops:                          # CDNA3: native FP8; no native FP4
+    fp16: 1307
+    bf16: 1307
+    fp8: 2615
+    mxfp4: 2615
+  default_mfu_prefill: 0.20
+  default_bw_efficiency_decode: 0.65
+
+mi325x:
+  display_name: "AMD MI325X"
+  arch: cdna3
+  memory_type: hbm
+  mem_gb: 256                          # HBM3e — more VRAM than MI300X, same die
+  hbm_bandwidth_gbps: 6000             # 6.0 TB/s
+  peak_flops:
+    fp16: 1307
+    bf16: 1307
+    fp8: 2615
+    mxfp4: 2615
+  default_mfu_prefill: 0.20
+  default_bw_efficiency_decode: 0.65
+
+mi350x:
+  display_name: "AMD MI350X"
+  arch: cdna4
+  memory_type: hbm
+  mem_gb: 288                          # HBM3e
+  hbm_bandwidth_gbps: 8000             # 8.0 TB/s
+  peak_flops:                          # CDNA4: native FP8 + FP4
+    fp16: 2600
+    bf16: 2600
+    fp8: 4600
+    mxfp4: 4600
+  default_mfu_prefill: 0.25
+  default_bw_efficiency_decode: 0.65
+
+mi300a:
+  display_name: "AMD MI300A"
+  arch: cdna3
+  memory_type: hbm
+  mem_gb: 128                          # HBM3 — CPU+GPU APU; unified memory
+  hbm_bandwidth_gbps: 5200             # 5.2 TB/s
+  peak_flops:                          # same compute die as MI300X, APU package
+    fp16: 1307
+    bf16: 1307
+    fp8: 2615
+    mxfp4: 2615
+  default_mfu_prefill: 0.20
+  default_bw_efficiency_decode: 0.65
