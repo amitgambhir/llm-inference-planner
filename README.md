@@ -212,7 +212,7 @@ Open [http://localhost:3000](http://localhost:3000). Four screens:
 | Module | Role |
 | --- | --- |
 | `planner/intake.py` | Multi-mode demand resolver — accepts `requests_per_day`, `avg_rps`, or `users × prompts_per_user_per_day`; returns `(requests_per_day, users)`; raises `WorkloadError` if no source supplied |
-| `planner/capacity.py` | Roofline model — prefill (compute-bound) + decode (bandwidth-bound) → replicas, TTFT, KV budget; `plan()` accepts `users`; `CapacityEstimate` carries `users`, `gpu_mem_gb`, `headroom_factor` |
+| `planner/capacity.py` | Roofline model — prefill (compute-bound) + decode (bandwidth-bound) → replicas, TTFT, KV budget; sliding-window KV correction for Gemma 2/3/4; `KvBudget` carries `effective_context_tokens`; warnings for ISL > model context window and global-layer head_dim mismatch |
 | `planner/cost.py` | On-demand and 1-yr reserved cost envelope from `catalog/costs.yaml`; `CostVariant` includes `cost_per_user_per_month` when `users` is set |
 | `planner/explain.py` | Napkin-math explainer — `render_napkin_math(est, cost=None)` walks the sizing arithmetic in plain language; every number read from `CapacityEstimate`/`CostEstimate` |
 | `planner/benchmark_plan.py` | Ordered test matrix — ISL sweep, concurrency sweep, precision compare, KV check |
@@ -245,7 +245,7 @@ FastAPI with SQLite persistence (Postgres-ready). Uses `create_app()` factory fo
 | File | Contents |
 | --- | --- |
 | `catalog/gpus.yaml` | Peak FLOPS, memory bandwidth, VRAM, arch, memory_type, MFU defaults — h100_sxm, h200_sxm, a100_80gb_sxm, l40s, l4 |
-| `catalog/models.yaml` | Param counts, hidden dim, layers, KV heads — llama-3.1-8b/70b, llama-3.3-70b, llama-4-maverick, gpt-oss-20b |
+| `catalog/models.yaml` | Param counts, hidden dim, layers, KV heads, context_len; 30+ models including Llama 3.1/3.3/4, Gemma 2/3/4, Mistral 7B, Mixtral 8×7B, Qwen 3, Nemotron-4 340B, GLM-5.1/5.2, gpt-oss-20b; optional: `sliding_window`, `global_layer_every_n` (interleaved attention), `global_head_dim`, `num_global_kv_heads` (Gemma 4) |
 | `catalog/costs.yaml` | On-demand + 1-yr reserved cost per GPU-hour |
 | `catalog/anchors.yaml` | Measured throughput anchors written by `ingest_anchor.py`; `concurrency` field is `float` (sub-1 values valid for multi-replica ÷ N); optional: `prefix_cache_hit_rate`, `effective_isl` (prefix-caching runs), `max_num_seqs` |
 | `catalog/benchmarks_public.yaml` | Public benchmark points (schema v2) — vLLM `level`, TRT-LLM `shape`, distribution `validate`, `sanity`; Phase B calibration stubs pre-staged |

@@ -46,6 +46,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | `catalog/gpus.yaml` | Peak FLOPS, memory bandwidth, VRAM, arch, memory_type, MFU defaults for each GPU SKU |
 | `catalog/models.yaml` | Parameter count, hidden dim, layers, KV heads; includes llama-3.3-70b and llama-4-maverick |
 | `catalog/costs.yaml` | On-demand + 1-yr reserved cost per GPU-hour |
+| `catalog/models.yaml` | Parameter count, hidden dim, layers, KV heads; 30+ entries including Gemma 2/3/4, Mistral, Mixtral, Nemotron-4, GLM-5; optional fields: `sliding_window`, `global_layer_every_n` (interleaved local/global attention), `global_head_dim`, `num_global_kv_heads` (Gemma 4 global layers) |
 | `catalog/anchors.yaml` | Measured throughput anchors; written by `ingest_anchor.py`; `concurrency: float` (sub-1 valid for multi-replica ÷ N); optional: `prefix_cache_hit_rate`, `effective_isl` (prefix-caching runs), `max_num_seqs` |
 | `catalog/benchmarks_public.yaml` | Public benchmark points (schema v2) — vLLM `level`, TRT-LLM `shape`, distribution `validate`, `sanity` points; Phase B stubs (measured: null) pre-staged |
 | `catalog/runtimes.yaml` | Supported inference engines with display names and engine confound notes |
@@ -103,7 +104,7 @@ Precedence: `requests_per_day` → `avg_rps` → `users × prompts`. Multiple so
 - **Prefill** (compute-bound): `prefill_time_ms = (effective_isl × params × 2) / (peak_flops × mfu × tp)`
 - **Decode** (bandwidth-bound): `decode_time_ms = (params × bytes_per_param) / (memory_bandwidth × mfu × tp)`
 - TTFT estimate = max(prefill_time, decode_time) × peak_multiplier
-- `max_concurrent_seqs` (KV budget): `floor(vram_bytes × kv_fraction / kv_bytes_per_seq)` — always uses full ISL
+- `max_concurrent_seqs` (KV budget): `floor(max_kv_tokens / effective_context_tokens)` where `effective_context_tokens` averages global-layer (full ISL+OSL) and local-layer (min(ISL+OSL, sliding_window)) KV per layer; equals ISL+OSL for full-attention models
 - `effective_max_seqs` = `min(max_concurrent_seqs, max_num_seqs)` — caps scheduler batch when `--max-num-seqs` is set
 - `effective_isl` = `isl − floor(prefix_cache_len × prefix_cache_hit_rate)` — reduces prefill demand when `--prefix-cache-len` is set; KV budget always uses full ISL
 - Replicas = `ceil(requests_per_day × peak_multiplier / (seconds_per_day / ttft_secs) / effective_max_seqs)`
@@ -205,6 +206,14 @@ Each quality sidecar (`results/quality/<tag>.json`) carries a `latency_tag` back
 **`--max-num-seqs` caps `effective_max_seqs`, not `kv.max_concurrent_seqs`.** The KV budget is computed from VRAM and is unchanged. `effective_max_seqs = min(kv.max_concurrent_seqs, max_num_seqs)` is applied after `kv_budget()` and flows into `eff_batch` and `replicas_concurrency`. When `max_num_seqs` is the binding limit (not KV budget), the assumptions section reports "scheduler cap is the binding limit".
 
 **`eff_batch` (not KV ceiling) is the scenario concurrency passed to `confidence()`.** `plan()` computes `eff_batch = max(1, floor(effective_max_seqs × batch_efficiency))` before calling `confidence()`. This is the expected steady-state operating batch, not the KV-cache capacity ceiling. Using the KV ceiling would let single-replica low-RPS anchors (e.g. c=0.6) grant HIGH confidence to plans that run at high concurrent load (eff_batch may be tens or hundreds). The `HIGH_CONCURRENCY_RATIO = 10.0` gate in `confidence.py` enforces: `max(anchor.c, eff_batch) / min(anchor.c, eff_batch) ≤ 10` for HIGH to be awarded.
+
+**Sliding-window KV budget is now correctly modelled for Gemma 2/3/4.** Models with `sliding_window` and `global_layer_every_n` in `catalog/models.yaml` trigger a mixed-layer KV calculation in `kv_budget()`. Local layers cap their KV at `min(ISL+OSL, sliding_window)`; global layers store the full `ISL+OSL`. `KvBudget.effective_context_tokens` holds the per-layer-average used for `max_concurrent_seqs`. Without this fix the planner would overestimate KV by 4–5× at long ISL (e.g. ISL=32768, window=1024: naive estimate uses 32768 per layer; corrected estimate uses ~1024 for 5 out of 6 layers → ~5× more concurrent sequences).
+
+**`plan()` warns when ISL exceeds the model's native context window.** When `isl > model.context_len`, a warning explains that positional encoding extension (e.g. RoPE scaling) is required. TTFT/throughput estimates remain valid if the serving framework supports the extended context, but the operator must configure it. This catches Nemotron-4 340B (context_len=4096 native) being used with longer ISL.
+
+**`plan()` warns when `global_head_dim` differs from local `head_dim`.** When `model.global_head_dim` is set, a warning reports how much larger or smaller the global-layer KV is vs the local-layer estimate. For Gemma 4 31B the global layers (every 6th) use `head_dim=512` with 4 KV heads — net 50% smaller than the local estimate — so the overall KV budget is conservatively overestimated. The warning is informational, not a hard error.
+
+**GLM-5.1 and GLM-5.2 use `geometry_source: estimated`.** Their Dynamic Sparse Attention (DSA) architecture uses non-standard `head_dim` values that do not follow `hidden_size / num_q_heads`. Until runtime-measured KV sizes are confirmed, confidence auto-downgrades one level and the geometry warning fires.
 
 ## Deployment (Vercel + Render)
 
