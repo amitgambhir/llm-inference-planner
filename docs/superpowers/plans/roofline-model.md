@@ -165,12 +165,37 @@ equivalent to the original.
 **Maximum concurrent sequences:**
 
 ```
-max_kv_tokens       = kv_cache_budget / kv_bytes_per_token
-max_concurrent_seqs = floor(max_kv_tokens / (ISL + OSL))
+max_kv_tokens           = kv_cache_budget / kv_bytes_per_token
+effective_context_tokens = (ISL + OSL)                            # full-attention models
+max_concurrent_seqs     = floor(max_kv_tokens / effective_context_tokens)
 ```
 
 This is the hard ceiling on how many requests can be in flight simultaneously
 in one replica. If it drops below 4, the planner emits a warning.
+
+**Sliding-window interleaved attention (Gemma 2/3/4).**
+Models with `sliding_window` and `global_layer_every_n` set in `catalog/models.yaml`
+use a mixed-layer formula. Local layers only need to store up to `sliding_window`
+tokens of KV; global layers store the full sequence. The planner averages across
+all layers:
+
+```
+n                        = global_layer_every_n          # e.g. 6 for Gemma 3/4
+global_layers            = num_layers // n
+local_layers             = num_layers − global_layers
+effective_context_tokens = (global_layers × (ISL+OSL)
+                            + local_layers × min(ISL+OSL, sliding_window))
+                           / num_layers
+max_concurrent_seqs      = floor(max_kv_tokens / effective_context_tokens)
+```
+
+For Gemma 3 12B at ISL=32768, OSL=512 (window=1024, n=6):
+
+- Without fix: effective_context = 33280 tokens/layer → baseline concurrency
+- With fix: effective_context ≈ (8 × 33280 + 40 × 1024) / 48 ≈ 6413 → **5× more concurrent sequences**
+
+`KvBudget.effective_context_tokens` stores the computed value for downstream use
+(explainer, report). For full-attention models it equals `ISL + OSL` unchanged.
 
 **Hard error:** If weights alone do not fit in usable memory at the chosen `tp`,
 the planner raises `CatalogError` rather than emitting a nonsense number.
@@ -685,6 +710,8 @@ python catalog/phase_c_refit.py
 | Weights don't fit at chosen dtype + tp | Hard `CatalogError` from `kv_budget()` |
 | `max_concurrent_seqs < 4` | Warning: KV budget very tight; suggest higher tp or larger GPU |
 | ISL ≥ 4096 | Warning: chunked prefill required for vLLM |
+| ISL > `model.context_len` | Warning: ISL exceeds native training context; RoPE scaling or equivalent required |
+| `model.global_head_dim` set | Informational warning: global-layer KV differs from local estimate; states direction (over/under) and percentage |
 | `geometry_source == "estimated"` | Warning: verify num_layers, d_model before production; confidence downgraded |
 | TTFT estimate > SLO | Warning with diagnosis: queue-bound vs compute-bound |
 | Confidence == DEFAULT | Warning: validate on live GPU before committing infrastructure |
@@ -813,8 +840,16 @@ kv_shard_factor = min(tp, num_kv_heads)
 # KV cache budget (TP group)
 kv_budget = (vram × gpu_mem_util − w_bytes − 0.5 GB) × kv_shard_factor
 
-# Max concurrent sequences (from KV budget; always uses full ISL)
-max_seqs = floor(kv_budget / (kv_bpt × (ISL + OSL)))
+# Effective context per layer per sequence (sliding-window models)
+# full-attention: effective_ctx = ISL + OSL
+# interleaved (Gemma 2/3/4): average of global (full) and local (capped) layers
+n              = global_layer_every_n
+global_layers  = L // n
+local_layers   = L − global_layers
+effective_ctx  = (global_layers × (ISL+OSL) + local_layers × min(ISL+OSL, sliding_window)) / L
+
+# Max concurrent sequences
+max_seqs = floor(kv_budget / (kv_bpt × effective_ctx))
 
 # Effective ISL for prefill (prefix cache reduces compute, not KV storage)
 effective_isl = ISL − floor(prefix_cache_len × prefix_cache_hit_rate)   (= ISL when not set)
