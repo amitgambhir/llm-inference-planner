@@ -66,6 +66,7 @@ class GpuProfile(BaseModel):
 class ModelProfile(BaseModel):
     name: str
     display_name: str
+    hf_id: Optional[str] = None           # HuggingFace model path (e.g. "meta-llama/Llama-3.1-8B-Instruct")
     is_moe: bool = False
     total_params: int
     active_params: int

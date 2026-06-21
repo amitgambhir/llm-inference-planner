@@ -12,6 +12,7 @@
 
 llama-2-70b:                          # dense — backs MLPerf v5.0 validation points
   display_name: "Llama 2 70B"
+  hf_id: "meta-llama/Llama-2-70b-chat-hf"
   is_moe: false
   total_params: 69_924_000_000
   active_params: 69_924_000_000
@@ -28,6 +29,7 @@ llama-2-70b:                          # dense — backs MLPerf v5.0 validation p
 
 gpt-oss-20b:                          # MoE seed — backs the golden test
   display_name: "gpt-oss-20b"
+  # no public HF repo; internal/reference model
   is_moe: true
   total_params: 20_900_000_000        # 20.9B (model card)
   active_params: 3_610_000_000        # 3.61B active per token (top-4 of 32 experts)
@@ -47,6 +49,7 @@ gpt-oss-20b:                          # MoE seed — backs the golden test
 
 llama-3.1-8b:                         # dense seed — backs the L4/FP8 anchors
   display_name: "Llama 3.1 8B"
+  hf_id: "meta-llama/Llama-3.1-8B-Instruct"
   is_moe: false
   total_params: 8_030_000_000
   active_params: 8_030_000_000         # dense → active == total
@@ -63,6 +66,7 @@ llama-3.1-8b:                         # dense seed — backs the L4/FP8 anchors
 
 llama-3.1-70b:                        # dense seed — for 8B-vs-70B scenario comparison
   display_name: "Llama 3.1 70B"
+  hf_id: "meta-llama/Llama-3.1-70B-Instruct"
   is_moe: false
   total_params: 70_600_000_000
   active_params: 70_600_000_000
@@ -79,6 +83,7 @@ llama-3.1-70b:                        # dense seed — for 8B-vs-70B scenario co
 
 qwen3-8b:                             # dense, very common open alternative to Llama 8B
   display_name: "Qwen3-8B"
+  hf_id: "Qwen/Qwen3-8B"
   is_moe: false
   total_params: 8_190_000_000
   active_params: 8_190_000_000
@@ -95,6 +100,7 @@ qwen3-8b:                             # dense, very common open alternative to L
 
 qwen3-30b-a3b:                        # MoE, popular "efficient" mid MoE (3B active of 30B)
   display_name: "Qwen3-30B-A3B"
+  hf_id: "Qwen/Qwen3-30B-A3B"
   is_moe: true
   total_params: 30_500_000_000
   active_params: 3_300_000_000         # "A3B" — ~3.3B active per token
@@ -113,6 +119,7 @@ qwen3-30b-a3b:                        # MoE, popular "efficient" mid MoE (3B act
 
 mistral-small-24b:                    # dense, fills the 8B↔70B gap; different family (Mistral)
   display_name: "Mistral Small 24B (2501/3.x)"
+  hf_id: "mistralai/Mistral-Small-Instruct-2409"
   is_moe: false
   total_params: 23_570_000_000
   active_params: 23_570_000_000
@@ -129,6 +136,7 @@ mistral-small-24b:                    # dense, fills the 8B↔70B gap; different
 
 gemma-2-9b:                           # dense, Google ecosystem — NON-STANDARD KV, interleaved attn
   display_name: "Gemma 2 9B"
+  hf_id: "google/gemma-2-9b-it"
   is_moe: false
   total_params: 9_240_000_000
   active_params: 9_240_000_000
@@ -147,6 +155,7 @@ gemma-2-9b:                           # dense, Google ecosystem — NON-STANDARD
 
 llama-3.3-70b:                        # dense — same arch as 3.1-70B, backs TRT-LLM validation points
   display_name: "Llama 3.3 70B"
+  hf_id: "meta-llama/Llama-3.3-70B-Instruct"
   is_moe: false
   total_params: 70_600_000_000
   active_params: 70_600_000_000
@@ -163,6 +172,7 @@ llama-3.3-70b:                        # dense — same arch as 3.1-70B, backs TR
 
 llama-4-maverick:                     # 128-expert sparse MoE — backs Maverick validation points
   display_name: "Llama 4 Maverick"
+  hf_id: "meta-llama/Llama-4-Maverick-17B-128E-Instruct"
   is_moe: true
   total_params: 400_000_000_000       # ~400B total (all expert weights reside in HBM)
   active_params: 52_000_000_000       # ~52B active per token (attention + 8/128 experts; estimate)
@@ -190,6 +200,7 @@ llama-4-maverick:                     # 128-expert sparse MoE — backs Maverick
 
 gemma-3-1b:                           # MQA; text-only; head_dim=256 atypical; interleaved attn
   display_name: "Gemma 3 1B"
+  hf_id: "google/gemma-3-1b-it"
   is_moe: false
   total_params: 1_000_000_000
   active_params: 1_000_000_000
@@ -208,6 +219,7 @@ gemma-3-1b:                           # MQA; text-only; head_dim=256 atypical; i
 
 gemma-3-4b:                           # GQA 2:1; vision (SigLIP 400M); head_dim=256 atypical
   display_name: "Gemma 3 4B"
+  hf_id: "google/gemma-3-4b-it"
   is_moe: false
   total_params: 4_300_000_000          # Google-published 4.3B
   active_params: 4_300_000_000
@@ -226,6 +238,7 @@ gemma-3-4b:                           # GQA 2:1; vision (SigLIP 400M); head_dim=
 
 gemma-3-12b:                          # GQA 2:1; vision; head_dim=256 atypical; interleaved attn
   display_name: "Gemma 3 12B"
+  hf_id: "google/gemma-3-12b-it"
   is_moe: false
   total_params: 12_000_000_000
   active_params: 12_000_000_000
@@ -244,6 +257,7 @@ gemma-3-12b:                          # GQA 2:1; vision; head_dim=256 atypical; 
 
 gemma-3-27b:                          # GQA 2:1; vision; only Gemma 3 size with standard head_dim=128
   display_name: "Gemma 3 27B"
+  hf_id: "google/gemma-3-27b-it"
   is_moe: false
   total_params: 27_200_000_000
   active_params: 27_200_000_000
@@ -269,6 +283,7 @@ gemma-3-27b:                          # GQA 2:1; vision; only Gemma 3 size with 
 
 gemma-4-e2b:                          # MQA local; 128K context; interleaved attn
   display_name: "Gemma 4 E2B"
+  hf_id: "google/gemma-4-e2b-it"
   is_moe: false
   total_params: 2_000_000_000
   active_params: 2_000_000_000
@@ -288,6 +303,7 @@ gemma-4-e2b:                          # MQA local; 128K context; interleaved att
 
 gemma-4-e4b:                          # GQA 4:1 local; 128K context; interleaved attn
   display_name: "Gemma 4 E4B"
+  hf_id: "google/gemma-4-e4b-it"
   is_moe: false
   total_params: 4_000_000_000
   active_params: 4_000_000_000
@@ -307,6 +323,7 @@ gemma-4-e4b:                          # GQA 4:1 local; 128K context; interleaved
 
 gemma-4-12b:                          # GQA 2:1; 256K context; gemma4_unified; interleaved attn
   display_name: "Gemma 4 12B"
+  hf_id: "google/gemma-4-12b-it"
   is_moe: false
   total_params: 12_000_000_000
   active_params: 12_000_000_000
@@ -326,6 +343,7 @@ gemma-4-12b:                          # GQA 2:1; 256K context; gemma4_unified; i
 
 gemma-4-26b-a4b:                      # MoE; 128 routed + 1 shared expert; 256K; interleaved attn
   display_name: "Gemma 4 26B-A4B"
+  hf_id: "google/gemma-4-26b-it"
   is_moe: true
   total_params: 26_000_000_000         # approximate from model name
   active_params: 4_000_000_000         # ~4B per token (8 routed experts + 1 shared)
@@ -347,6 +365,7 @@ gemma-4-26b-a4b:                      # MoE; 128 routed + 1 shared expert; 256K;
 
 gemma-4-31b:                          # dense; GQA 2:1; 256K context; interleaved attn
   display_name: "Gemma 4 31B"
+  hf_id: "google/gemma-4-31b-it"
   is_moe: false
   total_params: 31_000_000_000
   active_params: 31_000_000_000
@@ -369,6 +388,7 @@ gemma-4-31b:                          # dense; GQA 2:1; 256K context; interleave
 
 mistral-7b:                           # dense; GQA 4:1; sliding window disabled in v0.3
   display_name: "Mistral 7B v0.3"
+  hf_id: "mistralai/Mistral-7B-Instruct-v0.3"
   is_moe: false
   total_params: 7_241_000_000
   active_params: 7_241_000_000
@@ -385,6 +405,7 @@ mistral-7b:                           # dense; GQA 4:1; sliding window disabled 
 
 mixtral-8x7b:                         # MoE; 8 experts top-2; same attention arch as Mistral 7B
   display_name: "Mixtral 8x7B"
+  hf_id: "mistralai/Mixtral-8x7B-Instruct-v0.1"
   is_moe: true
   total_params: 46_700_000_000         # all 8 expert FFNs reside in HBM
   active_params: 12_900_000_000        # attention layers + 2/8 expert FFNs per token
@@ -405,6 +426,7 @@ mixtral-8x7b:                         # MoE; 8 experts top-2; same attention arc
 
 nemotron-4-340b:                      # dense; GQA 12:1; relu² activation; 4K native context
   display_name: "Nemotron-4 340B"
+  hf_id: "nvidia/Nemotron-4-340B-Instruct"
   is_moe: false
   total_params: 340_000_000_000
   active_params: 340_000_000_000
@@ -428,6 +450,7 @@ nemotron-4-340b:                      # dense; GQA 12:1; relu² activation; 4K n
 
 glm-5.1:                              # 754B MoE; 256 experts top-8+1shared; 200K context
   display_name: "GLM-5.1"
+  # no public HF repo; API-only at api.z.ai
   is_moe: true
   total_params: 754_000_000_000
   active_params: 40_000_000_000        # ~40B per token (8 routed + 1 shared expert)
@@ -446,6 +469,7 @@ glm-5.1:                              # 754B MoE; 256 experts top-8+1shared; 200
 
 glm-5.2:                              # 753B MoE; 256 experts top-8; 1M context via IndexShare
   display_name: "GLM-5.2"
+  # no public HF repo; API-only at api.z.ai
   is_moe: true
   total_params: 753_000_000_000
   active_params: 40_000_000_000        # ~40B per token
