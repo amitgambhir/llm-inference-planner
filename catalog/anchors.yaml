@@ -1,11 +1,19 @@
 # catalog/anchors.yaml
 # Measured calibration anchors. Each anchor lets the roofline back out a real MFU / bandwidth
 # efficiency for a (model, gpu, dtype, isl, concurrency) point, which upgrades confidence from
-# LOW (pure theory) toward HIGH for nearby scenarios. Phase 3's ingest_anchor.py appends new
+# DEFAULT (pure theory) toward HIGH for nearby scenarios. Phase 3's ingest_anchor.py appends new
 # rows from completed results/real/*.json and backfills derived_mfu_prefill.
 #
 # Seeded from the real L4 + Llama-3.1-8B-FP8 validation run (BENCHMARK_FINDINGS.md).
-# osl = 128 (harness default for these runs).
+# osl = 128 (harness default for those runs).
+#
+# Optional fields (not written by ingest_anchor.py — set manually for special benchmarks):
+#   max_num_seqs        (int)   scheduler batch cap applied during the run
+#   prefix_cache_hit_rate (float, 0.0–1.0) observed KV-cache hit rate
+#   effective_isl       (int)   tokens actually processed = isl × (1 – hit_rate);
+#                               use this for MFU back-calculation when prefix caching is active
+#   concurrency         (float) average in-flight requests per GPU; sub-1 values valid for
+#                               per-replica derived rows from multi-replica system totals
 
 - model: llama-3.1-8b
   gpu: l4
@@ -83,3 +91,79 @@
   measured_throughput_tok_s: 714
   derived_mfu_prefill: null
   source: "BENCHMARK_FINDINGS.md — mns=128 c=50"
+
+# gpt-oss-20b / H200 SXM anchors — topology comparison benchmark (RHOAI 3.4-ea.2).
+# Setup: vLLM, TP=1, 1 replica, --dtype bfloat16, --max-num-seqs 256,
+#        --max-num-batched-tokens 16384, --gpu-memory-utilization 0.92,
+#        --no-enable-prefix-caching. Benchmark tool: guidellm constant-rate.
+# Workload: ISL distribution mean=9000, stdev=4000, range [1,15000]; OSL median=50.
+#   isl: 9000 = distribution mean (used as fixed-ISL proxy; valid at low concurrency
+#        where requests are near-serial and mean TTFT ≈ prefill_time(ISL_mean)).
+#   osl: 50 = median output length.
+# TTFT P50: guidellm reported mean but not P50; mean is used as proxy (reasonable at c<2).
+# Implied derived_mfu_prefill ≈ 0.42 (c=0.6) and ≈ 0.41 (c=1.2) — above the H200 default
+# of 0.40, consistent with gpt-oss-20b's small active_params (3.61B) filling compute quickly.
+
+- model: gpt-oss-20b
+  gpu: h200_sxm
+  dtype: bf16
+  isl: 9000
+  osl: 50
+  concurrency: 0.6
+  measured_ttft_p50_ms: 156        # mean proxied as P50; pre-saturation (2 RPS, lightly loaded)
+  measured_ttft_p95_ms: 251
+  measured_throughput_tok_s: 100
+  derived_mfu_prefill: null        # implied ≈ 0.42; backfill via ingest_anchor.py
+  source: "Topology comparison gpt-oss-20b H200 SXM RHOAI-3.4-ea.2 — 1x1 TP1, 2 RPS achieved, ISL dist mean=9000 stdev=4000"
+
+- model: gpt-oss-20b
+  gpu: h200_sxm
+  dtype: bf16
+  isl: 9000
+  osl: 50
+  concurrency: 1.2
+  measured_ttft_p50_ms: 160        # mean proxied as P50; max SLA-qualifying point (3 RPS)
+  measured_ttft_p95_ms: 253
+  measured_throughput_tok_s: 151
+  derived_mfu_prefill: null        # implied ≈ 0.41; backfill via ingest_anchor.py
+  source: "Topology comparison gpt-oss-20b H200 SXM RHOAI-3.4-ea.2 — 1x1 TP1, 3 RPS achieved (TTFT P99 ≤ 500ms limit), ISL dist mean=9000 stdev=4000"
+
+# gpt-oss-20b / H200 SXM — prefix-caching anchors (16x1 EPP with prefix-cache-scorer).
+# Setup: same vLLM config as above except --enable-prefix-caching (no --no-enable-prefix-caching).
+#   effective_isl = 9000 × (1 − 0.80) = 1800 — tokens processed after cache hit.
+#   TTFT P50 reflects the median cache-hit request (1800-token prefill + decode).
+#   TTFT P95 (440–450ms) is stable across RPS levels: dominated by ISL-tail variance
+#     (cache-miss requests fall back to full ~9000-token prefill), NOT queue saturation.
+#   throughput_tok_s and concurrency are per-replica derived values (system totals ÷ 16).
+#     EPP load spread was 5.8–7.2% (effectively uniform); ÷16 is accurate.
+#   derived_mfu_prefill intentionally null: TTFT is dominated by decode + EPP scheduling
+#     overhead, not prefill of the 1800 effective tokens; back-calculation would understate
+#     the true MFU and mislead the confidence system.
+
+- model: gpt-oss-20b
+  gpu: h200_sxm
+  dtype: bf16
+  isl: 9000
+  effective_isl: 1800
+  prefix_cache_hit_rate: 0.80
+  osl: 50
+  concurrency: 0.83              # per replica (13.2 system total ÷ 16); 50 RPS target, 49.2 actual
+  measured_ttft_p50_ms: 73.7    # directly reported by guidellm (not proxied from mean)
+  measured_ttft_p95_ms: 447.3   # ISL-variance tail, not queue; stable with load
+  measured_throughput_tok_s: 154  # per replica (2,466 system total ÷ 16)
+  derived_mfu_prefill: null
+  source: "Topology comparison gpt-oss-20b H200 SXM RHOAI-3.4-ea.2 — 16x1 EPP prefix-caching, 50 RPS (49.2 actual); per-replica derived (÷16); effective_isl=1800 (80% hit rate)"
+
+- model: gpt-oss-20b
+  gpu: h200_sxm
+  dtype: bf16
+  isl: 9000
+  effective_isl: 1800
+  prefix_cache_hit_rate: 0.80
+  osl: 50
+  concurrency: 1.26             # per replica (20.1 system total ÷ 16); max SLA-qualifying (P99=487ms)
+  measured_ttft_p50_ms: 75.8   # directly reported by guidellm
+  measured_ttft_p95_ms: 440.1  # ISL-variance tail; P99=487ms ≤ 500ms SLA at 72 RPS (75 target)
+  measured_throughput_tok_s: 225  # per replica (3,598 system total ÷ 16)
+  derived_mfu_prefill: null
+  source: "Topology comparison gpt-oss-20b H200 SXM RHOAI-3.4-ea.2 — 16x1 EPP prefix-caching, 75 RPS (72.0 actual, TTFT P99=487ms ≤ 500ms); per-replica derived (÷16); effective_isl=1800 (80% hit rate)"

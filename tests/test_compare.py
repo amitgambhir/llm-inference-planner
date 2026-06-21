@@ -179,8 +179,21 @@ def test_notes_is_list(two_entries):
     assert isinstance(result.notes, list)
 
 
-def test_low_confidence_note_present_when_low_entry_exists(two_entries):
-    result = compare(two_entries)
+def test_low_confidence_note_present_when_low_entry_exists(l4_entry):
+    # Build a DEFAULT-confidence entry using a model+GPU with no anchors
+    model = get_model("qwen3-8b")
+    gpu = get_gpu("l40s")
+    est = plan(
+        requests_per_day=500_000, peak_multiplier=2.0,
+        isl=2048, osl=128, ttft_slo_ms=5000.0,
+        model=model, gpu=gpu, dtype="bf16", tp=1, traffic_class="batch",
+    )
+    cost = compute_cost(est, "l40s", tp=1)
+    default_entry = ComparisonEntry(
+        label="l40s-bf16-noanchor", estimate=est, cost=cost,
+        gpu_name="l40s", model_name="qwen3-8b", dtype="bf16",
+    )
+    result = compare([l4_entry, default_entry])
     combined = " ".join(result.notes).lower()
     assert "default confidence" in combined
 

@@ -260,10 +260,15 @@ The confidence rubric sets the **replica range band** and selects the `mfu` valu
 
 ### Anchor search (in priority order)
 
+The scenario concurrency passed to the rubric is **`eff_batch`** — the expected steady-state operating batch (`floor(effective_max_seqs × batch_efficiency)`), not the KV-cache capacity ceiling. Using the KV ceiling would let a single low-concurrency measurement (e.g. c=0.6 from a 2 RPS single-replica run) grant HIGH confidence to plans that operate at hundreds of concurrent sequences and were never measured at that load.
+
 1. **Exact family** — anchors where `(model, gpu, dtype)` all match.
    - ISL distance = `|anchor_isl − scenario_isl| / scenario_isl`
-   - If ISL distance ≤ 20%: **HIGH** confidence; MFU taken from `derived_mfu_prefill`.
-   - If ISL distance > 20%: **MEDIUM**; MFU from efficiency curve.
+   - Concurrency ratio = `max(anchor.concurrency, eff_batch) / min(anchor.concurrency, eff_batch)`
+   - If ISL distance ≤ 20% **and** concurrency ratio ≤ 10×: **HIGH** confidence; MFU taken from `derived_mfu_prefill`.
+   - Otherwise (ISL extrapolated OR concurrency ratio > 10×): **MEDIUM**; MFU from efficiency curve.
+
+   The 10× ratio gate (`HIGH_CONCURRENCY_RATIO`) is ratio-based, not normalized, because normalized distance `abs(a−b)/max(a,b)` caps at 1.0 and cannot distinguish c=0.6→eff_batch=59 (0.99) from c=10→eff_batch=59 (0.83) at any useful threshold. The ratio (98× vs 5.9×) cleanly separates them.
 
 2. **Same model, different GPU/dtype** — model measured elsewhere: **MEDIUM**,
    efficiency curve for both MFU and bw_eff.
@@ -543,13 +548,16 @@ production capacity commitment.
 ## Confidence rubric summary
 
 ```
-anchor (model, gpu, dtype) + ISL within ±20%  →  HIGH    (±10% range)
-anchor (model, gpu, dtype) + ISL beyond ±20%  →  MEDIUM  (±20% range)
-anchor same model, different gpu/dtype         →  MEDIUM  (±20% range)
-no anchor for this model                       →  DEFAULT (±25% range)
+anchor (model, gpu, dtype) + ISL within ±20% + concurrency ratio ≤ 10×  →  HIGH    (±10% range)
+anchor (model, gpu, dtype) + ISL beyond ±20% OR concurrency ratio > 10×  →  MEDIUM  (±20% range)
+anchor same model, different gpu/dtype                                    →  MEDIUM  (±20% range)
+no anchor for this model                                                  →  DEFAULT (±25% range)
 
 geometry_source == "estimated"  →  downgrade one level
   HIGH → MEDIUM, MEDIUM → DEFAULT
+
+Scenario concurrency = eff_batch (steady-state operating batch), not KV-cache ceiling.
+Concurrency ratio    = max(anchor.c, eff_batch) / min(anchor.c, eff_batch)   [ratio-based, not normalized]
 ```
 
 ---

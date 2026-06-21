@@ -216,7 +216,7 @@ Open [http://localhost:3000](http://localhost:3000). Four screens:
 | `planner/cost.py` | On-demand and 1-yr reserved cost envelope from `catalog/costs.yaml`; `CostVariant` includes `cost_per_user_per_month` when `users` is set |
 | `planner/explain.py` | Napkin-math explainer — `render_napkin_math(est, cost=None)` walks the sizing arithmetic in plain language; every number read from `CapacityEstimate`/`CostEstimate` |
 | `planner/benchmark_plan.py` | Ordered test matrix — ISL sweep, concurrency sweep, precision compare, KV check |
-| `planner/confidence.py` | Three-tier rubric: HIGH ±10%, MEDIUM ±20%, DEFAULT ±25%; `geometry_source="estimated"` downgrades one level |
+| `planner/confidence.py` | Three-tier rubric: HIGH ±10%, MEDIUM ±20%, DEFAULT ±25%; `geometry_source="estimated"` downgrades one level; `HIGH_CONCURRENCY_RATIO=10×` gate blocks sub-1 single-replica anchors from calibrating high-batch plans (`plan()` passes `eff_batch`, not the KV-budget ceiling, as the scenario concurrency) |
 | `planner/efficiency.py` | Regime-aware MFU and bandwidth efficiency curves — `mfu_prefill` (size + ISL + MoE) and `bw_eff_decode` (batch amortization; KV counted once in `decode_ceiling`) |
 | `planner/efficiency_constants.yaml` | Tunable curve constants; calibrated by `validate.fit()` against public benchmarks |
 | `planner/validate.py` | `fit()`, `report()`, `cv_leave_one_gpu_out()`, `parameter_sensitivity()`; dual-roofline per-point adapter; fit_role filtering |
@@ -247,7 +247,7 @@ FastAPI with SQLite persistence (Postgres-ready). Uses `create_app()` factory fo
 | `catalog/gpus.yaml` | Peak FLOPS, memory bandwidth, VRAM, arch, memory_type, MFU defaults — h100_sxm, h200_sxm, a100_80gb_sxm, l40s, l4 |
 | `catalog/models.yaml` | Param counts, hidden dim, layers, KV heads — llama-3.1-8b/70b, llama-3.3-70b, llama-4-maverick, gpt-oss-20b |
 | `catalog/costs.yaml` | On-demand + 1-yr reserved cost per GPU-hour |
-| `catalog/anchors.yaml` | Measured throughput anchors written by `ingest_anchor.py` |
+| `catalog/anchors.yaml` | Measured throughput anchors written by `ingest_anchor.py`; `concurrency` field is `float` (sub-1 values valid for multi-replica ÷ N); optional: `prefix_cache_hit_rate`, `effective_isl` (prefix-caching runs), `max_num_seqs` |
 | `catalog/benchmarks_public.yaml` | Public benchmark points (schema v2) — vLLM `level`, TRT-LLM `shape`, distribution `validate`, `sanity`; Phase B calibration stubs pre-staged |
 | `catalog/runtimes.yaml` | Supported engines with engine confound notes |
 | `catalog/runpod_phase_b.sh` | Phase B runbook — 5 ISL/OSL offline benchmarks on RunPod H100 |

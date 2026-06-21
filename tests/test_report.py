@@ -107,8 +107,9 @@ def test_validated_mode_badge(golden_estimate):
 
 
 def test_report_includes_confidence_label_low(golden_estimate):
+    # golden_estimate is gpt-oss-20b/h100_sxm; h200_sxm/bf16 anchors upgrade it to MEDIUM
     result = _base_report(golden_estimate)
-    assert "DEFAULT" in result
+    assert "MEDIUM" in result
 
 
 def test_report_includes_confidence_label_high(high_conf_estimate):
@@ -127,7 +128,7 @@ def test_report_includes_confidence_label_high(high_conf_estimate):
 
 def test_report_includes_band_percentage(golden_estimate):
     result = _base_report(golden_estimate)
-    assert "±25%" in result   # DEFAULT confidence = ±25%
+    assert "±20%" in result   # MEDIUM confidence = ±20%
 
 
 # ── Sizing figures ────────────────────────────────────────────────────────────

@@ -34,8 +34,10 @@ if TYPE_CHECKING:
 # Constants
 # ---------------------------------------------------------------------------
 
-HIGH_ISL_THRESHOLD = 0.20    # ±20% ISL → HIGH
-MEDIUM_ISL_THRESHOLD = 1.0   # ±100% ISL (same family) → MEDIUM
+HIGH_ISL_THRESHOLD = 0.20       # ±20% ISL → HIGH
+MEDIUM_ISL_THRESHOLD = 1.0      # ±100% ISL (same family) → MEDIUM
+HIGH_CONCURRENCY_RATIO = 10.0   # anchor must be within 10× of scenario concurrency for HIGH
+                                 # guards against sub-1 anchors calibrating high-batch plans
 
 BAND_FACTORS = {
     "high": 0.10,    # anchor calibrated, ISL within ±20%
@@ -116,13 +118,19 @@ def compute_confidence_from_anchors(
         nearest = min(exact_family, key=lambda a: abs(a.isl - isl))
         isl_dist = abs(nearest.isl - isl) / max(isl, 1)
         conc_dist = abs(nearest.concurrency - concurrency) / max(concurrency, 1)
+        # Ratio-based concurrency gate: how many times apart are the two concurrency values?
+        # 10× allows c=10 anchor to cover eff_batch≤100 (typical L4 range), while blocking
+        # sub-1 anchors (c=0.6) from calibrating plans at eff_batch≥6.
+        _conc_ratio = max(nearest.concurrency, concurrency) / max(
+            min(nearest.concurrency, concurrency), 1e-9
+        )
         ext_dist = ExtrapolationDistance(
             isl_distance=isl_dist,
             concurrency_distance=conc_dist,
             nearest_anchor=nearest,
         )
 
-        if isl_dist <= HIGH_ISL_THRESHOLD:
+        if isl_dist <= HIGH_ISL_THRESHOLD and _conc_ratio <= HIGH_CONCURRENCY_RATIO:
             level = "high"
             mfu = nearest.derived_mfu_prefill or gpu.default_mfu_prefill
             notes.append(
@@ -132,11 +140,18 @@ def compute_confidence_from_anchors(
         else:
             level = "medium"
             mfu = gpu.default_mfu_prefill
-            notes.append(
-                f"Same (model, gpu, dtype) anchor exists but ISL is extrapolated "
-                f"{isl_dist:.0%} beyond the calibrated point ({nearest.source}). "
-                "MFU is GPU default, not calibrated."
-            )
+            if isl_dist > HIGH_ISL_THRESHOLD:
+                notes.append(
+                    f"Same (model, gpu, dtype) anchor exists but ISL is extrapolated "
+                    f"{isl_dist:.0%} beyond the calibrated point ({nearest.source}). "
+                    "MFU is GPU default, not calibrated."
+                )
+            else:
+                notes.append(
+                    f"Anchor at concurrency {nearest.concurrency:.1f} is {_conc_ratio:.0f}× "
+                    f"from scenario concurrency {concurrency} — too far to calibrate "
+                    f"high-batch behavior. MFU is GPU default. ({nearest.source})"
+                )
         anchor_matched = (level == "high")
         best_anchor = nearest
 

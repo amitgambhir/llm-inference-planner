@@ -241,8 +241,9 @@ def test_chunked_prefill_step_omittable(golden_estimate):
 
 
 def test_plan_carries_confidence_label(golden_estimate):
+    # h200_sxm/bf16 anchors upgrade gpt-oss-20b to MEDIUM even on h100_sxm
     bp = benchmark_plan(golden_estimate, "gpt-oss-20b", "h100_sxm")
-    assert bp.confidence == "default"
+    assert bp.confidence == "medium"
 
 
 def test_plan_carries_binding_constraint(golden_estimate):

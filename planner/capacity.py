@@ -81,6 +81,10 @@ class KvBudget:
     kv_cache_budget_bytes: float
     max_kv_tokens: float
     max_concurrent_seqs: int
+    # Average effective context tokens per layer per in-flight sequence.
+    # Equals (isl + osl) for full-attention models; lower for sliding-window
+    # models where local layers cap KV at the window size.
+    effective_context_tokens: float = 0.0
 
 
 @dataclass
@@ -201,7 +205,23 @@ def kv_budget(
         )
 
     max_kv_tokens = kv_cache_budget / kv_bpt
-    max_concurrent_seqs = max(1, math.floor(max_kv_tokens / (isl + osl)))
+
+    # Sliding-window models (Gemma 2/3/4): local layers cap KV at the window size;
+    # global layers store the full sequence. effective_context_tokens is the
+    # per-layer-average tokens stored per in-flight sequence, so the existing
+    # max_kv_tokens denominator still applies without changing its units.
+    if model.sliding_window is not None and model.global_layer_every_n is not None:
+        n = model.global_layer_every_n
+        global_layers = model.num_layers // n
+        local_layers = model.num_layers - global_layers
+        effective_context_tokens = (
+            global_layers * (isl + osl) +
+            local_layers * min(isl + osl, model.sliding_window)
+        ) / model.num_layers
+    else:
+        effective_context_tokens = float(isl + osl)
+
+    max_concurrent_seqs = max(1, math.floor(max_kv_tokens / effective_context_tokens))
 
     return KvBudget(
         kv_bytes_per_token=kv_bpt,
@@ -210,6 +230,7 @@ def kv_budget(
         kv_cache_budget_bytes=kv_cache_budget,
         max_kv_tokens=max_kv_tokens,
         max_concurrent_seqs=max_concurrent_seqs,
+        effective_context_tokens=effective_context_tokens,
     )
 
 
@@ -509,7 +530,10 @@ def plan(
         effective_max_seqs = min(kv.max_concurrent_seqs, max_num_seqs)
 
     # ── 3. Confidence + calibrated MFU / bw_eff ───────────────────────────
-    conf = confidence(model, gpu, dtype, isl, osl, kv.max_concurrent_seqs)
+    # Use eff_batch (steady-state expected batch) as the scenario concurrency for
+    # anchor matching — KV budget is the capacity ceiling, not the operating point.
+    eff_batch = max(1, int(effective_max_seqs * batch_efficiency))
+    conf = confidence(model, gpu, dtype, isl, osl, eff_batch)
 
     # Precedence: measured anchor > regime-aware efficiency curve > hard floor.
     # Anchors win unconditionally (they're from a real GPU measurement).
@@ -528,10 +552,7 @@ def plan(
     pfill_tps = prefill_ceiling(gpu, model, dtype, effective_isl, mfu, bw_eff_base, tp)
 
     avg_ctx = isl + osl // 2        # average context mid-generation
-
-    # Effective batch: continuous batching is never 100% full in steady state.
-    # Respects --max-num-seqs cap when set.
-    eff_batch = max(1, int(effective_max_seqs * batch_efficiency))
+    # eff_batch already computed above (before confidence call, for anchor matching)
 
     # kv_ratio: reported as a diagnostic; KV bytes are already counted once in
     # decode_ceiling's bytes_per_step — bw_eff_decode must NOT apply a second penalty.
@@ -603,6 +624,28 @@ def plan(
         warnings.append(
             "Model geometry estimated from param count, not from a model card. "
             "Verify num_layers, d_model, and head configuration before production use."
+        )
+    if isl > model.context_len:
+        warnings.append(
+            f"ISL ({isl:,}) exceeds {model.display_name}'s native context window "
+            f"({model.context_len:,} tokens). Positional encoding extension (e.g. "
+            "RoPE scaling) required; check that the serving framework supports the "
+            "requested context length. TTFT and throughput estimates remain valid if "
+            "it does."
+        )
+    if model.global_head_dim is not None:
+        n = model.global_layer_every_n or 6
+        global_layers = model.num_layers // n
+        kv_global = 2 * (model.num_global_kv_heads or model.num_kv_heads) * model.global_head_dim
+        kv_local = 2 * model.num_kv_heads * model.head_dim
+        direction = "larger" if kv_global > kv_local else "smaller"
+        pct = abs(kv_global / kv_local - 1) * 100
+        effect = "underestimated" if kv_global > kv_local else "overestimated (conservative)"
+        warnings.append(
+            f"Global attention layers (every {n}th, {global_layers} of {model.num_layers}) "
+            f"use head_dim={model.global_head_dim} — per-token KV for those layers is "
+            f"{pct:.0f}% {direction} than the local-layer estimate. "
+            f"Overall KV budget is slightly {effect}."
         )
     if not ttft.slo_met and ttft.slo_breach_reason:
         warnings.append(f"TTFT SLO BREACH: {ttft.slo_breach_reason}")
