@@ -11,71 +11,164 @@ import {
   type ScenarioCreate,
 } from "@/lib/types";
 
-// ── Custom model form ─────────────────────────────────────────────────────────
+// ── Custom model form — HuggingFace lookup ────────────────────────────────────
+
+interface HFSpec {
+  name: string;
+  display_name: string;
+  num_layers: number;
+  d_model: number;
+  num_q_heads: number;
+  num_kv_heads: number;
+  head_dim: number;
+  context_len: number;
+  native_dtype: string;
+  weight_bytes_per_param: number;
+  kv_dtype_bytes: number;
+  geometry_source: "estimated";
+  resident_weights_gb?: number;
+  total_params: number;
+  active_params: number;
+  is_moe: boolean;
+  num_experts?: number;
+  experts_per_token?: number;
+}
+
+function fmtParams(n: number): string {
+  if (n >= 1e12) return `${(n / 1e12).toFixed(1)}T`;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(0)}M`;
+  return String(n);
+}
 
 function CustomModelFields({
   onChange,
 }: {
   onChange: (spec: Record<string, unknown> | null) => void;
 }) {
-  const [mode, setMode] = useState<"rough" | "full">("rough");
-  const [params, setParams] = useState("");
-  const [activeParams, setActiveParams] = useState("");
+  const [hfId, setHfId] = useState("");
+  const [hfToken, setHfToken] = useState("");
+  const [showToken, setShowToken] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [spec, setSpec] = useState<HFSpec | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
 
-  const handleChange = () => {
-    if (!params) { onChange(null); return; }
-    const totalParams = parseFloat(params) * 1e9;
-    const spec: Record<string, unknown> = { total_params: totalParams, is_moe: false };
-    if (activeParams) spec.active_params = parseFloat(activeParams) * 1e9;
-    onChange(spec);
+  const handleFetch = async () => {
+    const trimmed = hfId.trim();
+    if (!trimmed || !trimmed.includes("/")) {
+      setFetchError('Enter a HuggingFace model ID like "meta-llama/Meta-Llama-3-8B"');
+      return;
+    }
+    setLoading(true);
+    setFetchError(null);
+    setSpec(null);
+    setWarnings([]);
+    onChange(null);
+
+    try {
+      const headers: Record<string, string> = {};
+      if (hfToken.trim()) headers["x-hf-token"] = hfToken.trim();
+
+      const res = await fetch(
+        `/api/hf-config?model=${encodeURIComponent(trimmed)}`,
+        { headers }
+      );
+      const data = await res.json() as
+        | { spec: HFSpec; warnings: string[] }
+        | { error: string; message: string };
+
+      if (!res.ok || "error" in data) {
+        const msg = "message" in data ? data.message : `HTTP ${res.status}`;
+        setFetchError(msg);
+        return;
+      }
+
+      setSpec(data.spec);
+      setWarnings(data.warnings);
+      onChange(data.spec as unknown as Record<string, unknown>);
+    } catch {
+      setFetchError("Network error — could not reach the server.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm">
-      <p className="text-amber-800 font-medium mb-2">Custom model — geometry estimated from params</p>
-      <div className="flex gap-2 mb-3">
+    <div className="mt-2 space-y-3">
+      {/* HF model ID row */}
+      <div className="flex gap-2">
+        <input
+          className="flex-1 border rounded-lg px-3 py-2 text-sm font-mono"
+          placeholder="owner/model-name  e.g. meta-llama/Meta-Llama-3-8B"
+          value={hfId}
+          onChange={(e) => { setHfId(e.target.value); setSpec(null); setFetchError(null); onChange(null); }}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleFetch(); } }}
+        />
         <button
           type="button"
-          onClick={() => setMode("rough")}
-          className={`px-2 py-1 rounded text-xs ${mode === "rough" ? "bg-amber-600 text-white" : "bg-white border"}`}
+          onClick={handleFetch}
+          disabled={loading || !hfId.trim()}
+          className="px-4 py-2 rounded-lg text-sm bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-40 transition-colors"
         >
-          Param count only
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode("full")}
-          className={`px-2 py-1 rounded text-xs ${mode === "full" ? "bg-amber-600 text-white" : "bg-white border"}`}
-        >
-          Full spec
+          {loading ? "Fetching…" : "Fetch"}
         </button>
       </div>
-      {mode === "rough" && (
-        <div className="flex gap-3">
-          <label className="flex flex-col gap-1 flex-1">
-            <span className="text-gray-600">Total params (B)</span>
-            <input
-              type="number"
-              className="border rounded px-2 py-1"
-              placeholder="e.g. 70"
-              value={params}
-              onChange={(e) => { setParams(e.target.value); handleChange(); }}
-            />
-          </label>
-          <label className="flex flex-col gap-1 flex-1">
-            <span className="text-gray-600">Active params (B) — MoE</span>
-            <input
-              type="number"
-              className="border rounded px-2 py-1"
-              placeholder="Leave blank if dense"
-              value={activeParams}
-              onChange={(e) => { setActiveParams(e.target.value); handleChange(); }}
-            />
-          </label>
+
+      {/* Gated model token toggle */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowToken(!showToken)}
+          className="text-xs text-gray-500 hover:text-gray-700"
+        >
+          {showToken ? "▾ Hide token" : "▸ Gated model? Add HF token"}
+        </button>
+        {showToken && (
+          <input
+            type="password"
+            className="mt-1 w-full border rounded-lg px-3 py-2 text-sm font-mono"
+            placeholder="hf_..."
+            value={hfToken}
+            onChange={(e) => setHfToken(e.target.value)}
+          />
+        )}
+      </div>
+
+      {/* Error */}
+      {fetchError && (
+        <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+          {fetchError}
+        </p>
+      )}
+
+      {/* Warnings */}
+      {warnings.length > 0 && (
+        <ul className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 space-y-1 list-disc list-inside">
+          {warnings.map((w, i) => <li key={i}>{w}</li>)}
+        </ul>
+      )}
+
+      {/* Geometry preview */}
+      {spec && (
+        <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-xs space-y-1">
+          <p className="font-semibold text-green-800 text-sm">{spec.display_name}</p>
+          <div className="grid grid-cols-3 gap-x-4 gap-y-1 text-gray-700 mt-1">
+            <span>Params: <strong>{fmtParams(spec.total_params)}</strong>{spec.is_moe ? ` (${fmtParams(spec.active_params)} active)` : ""}</span>
+            {spec.resident_weights_gb != null && (
+              <span>Weights: <strong>{spec.resident_weights_gb.toFixed(1)} GB</strong></span>
+            )}
+            <span>Layers: <strong>{spec.num_layers}</strong></span>
+            <span>d_model: <strong>{spec.d_model}</strong></span>
+            <span>Q heads: <strong>{spec.num_q_heads}</strong></span>
+            <span>KV heads: <strong>{spec.num_kv_heads}</strong></span>
+            <span>head_dim: <strong>{spec.head_dim}</strong></span>
+            <span>Context: <strong>{(spec.context_len / 1024).toFixed(0)}K</strong></span>
+            <span>Dtype: <strong>{spec.native_dtype}</strong></span>
+          </div>
+          <p className="text-amber-600 mt-1">Geometry is estimated — confidence will be capped at MEDIUM.</p>
         </div>
       )}
-      <p className="text-amber-700 text-xs mt-2">
-        ⚠ Estimated geometry — confidence will be capped at MEDIUM.
-      </p>
     </div>
   );
 }
@@ -186,17 +279,9 @@ export default function ScenarioBuilder() {
               ))}
             </select>
           ) : (
-            <>
-              <input
-                className="w-full border rounded-lg px-3 py-2 text-sm"
-                placeholder="e.g. my-custom-70b"
-                value={form.model_name}
-                onChange={(e) => set("model_name", e.target.value)}
-              />
-              <CustomModelFields onChange={(spec) => {
-                if (spec) set("model_name", JSON.stringify(spec));
-              }} />
-            </>
+            <CustomModelFields onChange={(spec) => {
+              if (spec) set("model_name", JSON.stringify(spec));
+            }} />
           )}
         </div>
 

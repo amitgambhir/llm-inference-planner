@@ -8,6 +8,7 @@ register_gpu(), which persist to a writable user-catalog dir.
 
 from __future__ import annotations
 
+import json
 import math
 import shutil
 from pathlib import Path
@@ -352,11 +353,18 @@ def _estimate_geometry(total_params: int, active_params: int, dtype: str) -> dic
 
 def resolve_model(name_or_spec: str | dict) -> ModelProfile:
     """Resolve a model from: (a) catalog name, (b) full inline spec dict,
-    (c) param-only rough spec dict with total_params + dtype.
+    (c) param-only rough spec dict with total_params + dtype,
+    (d) JSON-encoded spec string (from UI custom-model or HF import).
 
     Rough specs return geometry_source='estimated' and emit a warning.
     """
     if isinstance(name_or_spec, str):
+        stripped = name_or_spec.strip()
+        if stripped.startswith("{"):
+            try:
+                return resolve_model(json.loads(stripped))
+            except (json.JSONDecodeError, ValueError):
+                pass
         return get_model(name_or_spec)
 
     spec = dict(name_or_spec)

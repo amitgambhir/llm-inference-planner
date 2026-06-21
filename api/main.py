@@ -100,6 +100,9 @@ def create_app(
             traffic_class=body.traffic_class,
             gpu_mem_util=body.gpu_mem_util,
             runtime=body.runtime,
+            prefix_cache_len=body.prefix_cache_len,
+            prefix_cache_hit_rate=body.prefix_cache_hit_rate,
+            max_num_seqs=body.max_num_seqs,
             created_at=datetime.now(timezone.utc),
         )
         db.add(row)
