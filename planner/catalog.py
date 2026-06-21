@@ -84,6 +84,12 @@ class ModelProfile(BaseModel):
     # MoE extras (informational)
     num_experts: Optional[int] = None
     experts_per_token: Optional[int] = None
+    # Interleaved sliding-window attention (Gemma 2/3/4 and similar architectures)
+    sliding_window: Optional[int] = None        # local-layer KV window size (tokens)
+    global_layer_every_n: Optional[int] = None  # 1-in-N layers is global (full-context)
+    # Global-layer KV geometry when it differs from local (Gemma 4)
+    global_head_dim: Optional[int] = None       # head_dim used by global layers
+    num_global_kv_heads: Optional[int] = None   # KV heads in global layers (if different from num_kv_heads)
 
     @property
     def resident_weights_bytes(self) -> float:

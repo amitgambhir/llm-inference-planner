@@ -127,7 +127,7 @@ mistral-small-24b:                    # dense, fills the 8B↔70B gap; different
   geometry_source: known
   context_len: 131072
 
-gemma-2-9b:                           # dense, Google ecosystem — but NON-STANDARD KV, read note
+gemma-2-9b:                           # dense, Google ecosystem — NON-STANDARD KV, interleaved attn
   display_name: "Gemma 2 9B"
   is_moe: false
   total_params: 9_240_000_000
@@ -142,12 +142,8 @@ gemma-2-9b:                           # dense, Google ecosystem — but NON-STAN
   kv_dtype_bytes: 2                    # Gemma commonly served bf16 KV
   geometry_source: known
   context_len: 8192
-  kv_cache_note: >
-    Interleaved attention: alternating layers use sliding-window LOCAL attention (window 4096)
-    vs GLOBAL attention. For context > 4096, the local layers cap their KV at 4096 tokens, so the
-    naive kv_bytes_per_token * context OVERESTIMATES KV. The planner's kv_budget() should treat
-    sliding-window layers specially (cap at window) or it will undersize concurrency for Gemma.
-    Combined with head_dim=256, Gemma's per-token KV is unusually large on the global layers.
+  sliding_window: 4096                 # local layers cap KV at 4096 tokens
+  global_layer_every_n: 2             # alternating: every 2nd layer is global (full-context)
 
 llama-3.3-70b:                        # dense — same arch as 3.1-70B, backs TRT-LLM validation points
   display_name: "Llama 3.3 70B"
@@ -185,3 +181,283 @@ llama-4-maverick:                     # 128-expert sparse MoE — backs Maverick
 
 # Custom models supplied at request time get geometry_source: "estimated" when the rough
 # param-only path fills in missing geometry — which triggers a confidence downgrade + warning.
+
+# ── Gemma 3 family (Google) ──────────────────────────────────────────────────
+# head_dim=256 for 1B/4B/12B (ATYPICAL — decoupled from hidden_size/num_q_heads).
+# head_dim=128 for 27B only. Interleaved local+global attention: 5 local (sliding-
+# window) layers per 1 global layer. The planner's kv_budget() treats all layers as
+# global — KV estimate is conservatively large at long context.
+
+gemma-3-1b:                           # MQA; text-only; head_dim=256 atypical; interleaved attn
+  display_name: "Gemma 3 1B"
+  is_moe: false
+  total_params: 1_000_000_000
+  active_params: 1_000_000_000
+  num_layers: 26
+  d_model: 1152
+  num_q_heads: 4
+  num_kv_heads: 1                      # MQA — single KV head
+  head_dim: 256                        # ATYPICAL: not 1152/4=288; decoupled projection
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 2                    # Gemma typically served bf16 KV
+  geometry_source: known
+  context_len: 32768
+  sliding_window: 512                  # local layers cap KV at 512 tokens
+  global_layer_every_n: 6             # 1 global per 5 local (every 6th layer is global)
+
+gemma-3-4b:                           # GQA 2:1; vision (SigLIP 400M); head_dim=256 atypical
+  display_name: "Gemma 3 4B"
+  is_moe: false
+  total_params: 4_300_000_000          # Google-published 4.3B
+  active_params: 4_300_000_000
+  num_layers: 34
+  d_model: 2560
+  num_q_heads: 8
+  num_kv_heads: 4                      # GQA 2:1
+  head_dim: 256                        # ATYPICAL: not 2560/8=320
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 2
+  geometry_source: known
+  context_len: 131072
+  sliding_window: 1024                 # local layers cap KV at 1024 tokens
+  global_layer_every_n: 6             # 1 global per 5 local
+
+gemma-3-12b:                          # GQA 2:1; vision; head_dim=256 atypical; interleaved attn
+  display_name: "Gemma 3 12B"
+  is_moe: false
+  total_params: 12_000_000_000
+  active_params: 12_000_000_000
+  num_layers: 48
+  d_model: 3840
+  num_q_heads: 16
+  num_kv_heads: 8                      # GQA 2:1
+  head_dim: 256                        # ATYPICAL: not 3840/16=240
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 2
+  geometry_source: known
+  context_len: 131072
+  sliding_window: 1024
+  global_layer_every_n: 6
+
+gemma-3-27b:                          # GQA 2:1; vision; only Gemma 3 size with standard head_dim=128
+  display_name: "Gemma 3 27B"
+  is_moe: false
+  total_params: 27_200_000_000
+  active_params: 27_200_000_000
+  num_layers: 62
+  d_model: 5376
+  num_q_heads: 32
+  num_kv_heads: 16                     # GQA 2:1
+  head_dim: 128                        # standard (1B/4B/12B all use 256 — this is the exception)
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 2
+  geometry_source: known
+  context_len: 131072
+  sliding_window: 1024
+  global_layer_every_n: 6
+
+# ── Gemma 4 family (Google) ──────────────────────────────────────────────────
+# model_type: gemma4_text (E2B/E4B) / gemma4_unified (12B) / gemma4 (26B-A4B, 31B).
+# Local attention layers: head_dim=256. Global attention layers (every 6th):
+# global_head_dim=512, separate num_global_kv_heads — significantly larger KV footprint.
+# Planner uses local head_dim for all layers; global-layer KV is underestimated.
+# tie_word_embeddings=true for all Gemma 4 sizes.
+
+gemma-4-e2b:                          # MQA local; 128K context; interleaved attn
+  display_name: "Gemma 4 E2B"
+  is_moe: false
+  total_params: 2_000_000_000
+  active_params: 2_000_000_000
+  num_layers: 35
+  d_model: 1536
+  num_q_heads: 8
+  num_kv_heads: 1                      # MQA (local attention layers)
+  head_dim: 256
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 2
+  geometry_source: known
+  context_len: 131072
+  sliding_window: 512
+  global_layer_every_n: 6
+  global_head_dim: 512                 # global layers use 512-dim KV (vs 256 local)
+
+gemma-4-e4b:                          # GQA 4:1 local; 128K context; interleaved attn
+  display_name: "Gemma 4 E4B"
+  is_moe: false
+  total_params: 4_000_000_000
+  active_params: 4_000_000_000
+  num_layers: 42
+  d_model: 2560
+  num_q_heads: 8
+  num_kv_heads: 2                      # GQA 4:1 (local attention layers)
+  head_dim: 256
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 2
+  geometry_source: known
+  context_len: 131072
+  sliding_window: 1024
+  global_layer_every_n: 6
+  global_head_dim: 512
+
+gemma-4-12b:                          # GQA 2:1; 256K context; gemma4_unified; interleaved attn
+  display_name: "Gemma 4 12B"
+  is_moe: false
+  total_params: 12_000_000_000
+  active_params: 12_000_000_000
+  num_layers: 48
+  d_model: 3840
+  num_q_heads: 16
+  num_kv_heads: 8                      # GQA 2:1 (local layers)
+  head_dim: 256
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 2
+  geometry_source: known
+  context_len: 262144
+  sliding_window: 1024
+  global_layer_every_n: 6
+  global_head_dim: 512
+
+gemma-4-26b-a4b:                      # MoE; 128 routed + 1 shared expert; 256K; interleaved attn
+  display_name: "Gemma 4 26B-A4B"
+  is_moe: true
+  total_params: 26_000_000_000         # approximate from model name
+  active_params: 4_000_000_000         # ~4B per token (8 routed experts + 1 shared)
+  num_experts: 128
+  experts_per_token: 8                 # +1 always-active shared expert (minor overhead)
+  num_layers: 30
+  d_model: 2816
+  num_q_heads: 16
+  num_kv_heads: 8                      # GQA 2:1 (local layers)
+  head_dim: 256
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 2
+  geometry_source: known
+  context_len: 262144
+  sliding_window: 1024
+  global_layer_every_n: 6
+  global_head_dim: 512
+
+gemma-4-31b:                          # dense; GQA 2:1; 256K context; interleaved attn
+  display_name: "Gemma 4 31B"
+  is_moe: false
+  total_params: 31_000_000_000
+  active_params: 31_000_000_000
+  num_layers: 60
+  d_model: 5376
+  num_q_heads: 32
+  num_kv_heads: 16                     # GQA 2:1 (local layers)
+  head_dim: 256                        # local layers; global layers use head_dim=512
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 2
+  geometry_source: known
+  context_len: 262144
+  sliding_window: 1024
+  global_layer_every_n: 6
+  global_head_dim: 512                 # global layers: larger head_dim
+  num_global_kv_heads: 4              # global layers: fewer KV heads (net 2× smaller than local)
+
+# ── Mistral family ───────────────────────────────────────────────────────────
+
+mistral-7b:                           # dense; GQA 4:1; sliding window disabled in v0.3
+  display_name: "Mistral 7B v0.3"
+  is_moe: false
+  total_params: 7_241_000_000
+  active_params: 7_241_000_000
+  num_layers: 32
+  d_model: 4096
+  num_q_heads: 32
+  num_kv_heads: 8                      # GQA 4:1
+  head_dim: 128
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 1
+  geometry_source: known
+  context_len: 32768
+
+mixtral-8x7b:                         # MoE; 8 experts top-2; same attention arch as Mistral 7B
+  display_name: "Mixtral 8x7B"
+  is_moe: true
+  total_params: 46_700_000_000         # all 8 expert FFNs reside in HBM
+  active_params: 12_900_000_000        # attention layers + 2/8 expert FFNs per token
+  num_experts: 8
+  experts_per_token: 2
+  num_layers: 32
+  d_model: 4096
+  num_q_heads: 32
+  num_kv_heads: 8                      # GQA 4:1; identical to Mistral 7B
+  head_dim: 128
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 1
+  geometry_source: known
+  context_len: 32768
+
+# ── NVIDIA Nemotron ──────────────────────────────────────────────────────────
+
+nemotron-4-340b:                      # dense; GQA 12:1; relu² activation; 4K native context
+  display_name: "Nemotron-4 340B"
+  is_moe: false
+  total_params: 340_000_000_000
+  active_params: 340_000_000_000
+  num_layers: 96
+  d_model: 18432
+  num_q_heads: 96
+  num_kv_heads: 8                      # GQA 12:1 — extreme compression; 96 Q → 8 KV heads
+  head_dim: 192                        # non-standard; 18432/96=192 ✓
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 1
+  geometry_source: known
+  context_len: 4096                    # native training context; use RoPE scaling for longer inference
+
+# ── ZhipuAI / Z.ai GLM-5 family ─────────────────────────────────────────────
+# Architecture: glm_moe_dsa (MoE + Dynamic Sparse Attention). Full MHA (no GQA).
+# head_dim in config DOES NOT follow hidden_size/num_q_heads (6144/64=96).
+# The field reflects DSA internal projection dimensions. KV budget via
+# 2×layers×kv_heads×head_dim is approximate — validate against actual runtime.
+# Both sizes: 78 layers, 256 routed experts, ~40B active params per token.
+
+glm-5.1:                              # 754B MoE; 256 experts top-8+1shared; 200K context
+  display_name: "GLM-5.1"
+  is_moe: true
+  total_params: 754_000_000_000
+  active_params: 40_000_000_000        # ~40B per token (8 routed + 1 shared expert)
+  num_experts: 256
+  experts_per_token: 8                 # +1 always-active shared expert
+  num_layers: 78
+  d_model: 6144
+  num_q_heads: 64
+  num_kv_heads: 64                     # full MHA — no GQA
+  head_dim: 64                         # DSA config value; NOT 6144/64=96 — verify before production
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 1
+  geometry_source: estimated           # DSA head_dim unverified; KV budget approximate
+  context_len: 200704                  # ~200K tokens (202752 max_position_embeddings)
+
+glm-5.2:                              # 753B MoE; 256 experts top-8; 1M context via IndexShare
+  display_name: "GLM-5.2"
+  is_moe: true
+  total_params: 753_000_000_000
+  active_params: 40_000_000_000        # ~40B per token
+  num_experts: 256
+  experts_per_token: 8
+  num_layers: 78
+  d_model: 6144
+  num_q_heads: 64
+  num_kv_heads: 64                     # full MHA — no GQA
+  head_dim: 192                        # DSA config value; differs from 5.1's 64 — verify before production
+  native_dtype: bf16
+  weight_bytes_per_param: 2.0
+  kv_dtype_bytes: 1
+  geometry_source: estimated           # DSA head_dim unverified; KV budget approximate
+  context_len: 1048576                 # 1M context (IndexShare: sparse attn index reused every 4 layers)

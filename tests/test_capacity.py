@@ -753,3 +753,172 @@ def test_plan_llama_l4_has_high_confidence():
     )
     assert est.confidence == "high"
     assert est.anchor_matched is True
+
+
+# ============================================================================
+# Unit tests — sliding-window KV budget
+# ============================================================================
+
+
+def test_kv_budget_sliding_window_more_seqs_than_full_attention():
+    """At long ISL, sliding-window model fits more concurrent seqs than a full-attention clone."""
+    gpu = get_gpu("h100_sxm")
+    # Use gemma-3-12b which has sliding_window=1024, global_layer_every_n=6
+    sw_model = get_model("gemma-3-12b")
+    # Build a synthetic full-attention twin (same geometry, no sliding window)
+    fa_model = resolve_model({
+        "name": "gemma-3-12b-full-attn",
+        "display_name": "Gemma 3 12B (full-attn twin)",
+        "total_params": sw_model.total_params,
+        "active_params": sw_model.active_params,
+        "num_layers": sw_model.num_layers,
+        "d_model": sw_model.d_model,
+        "num_q_heads": sw_model.num_q_heads,
+        "num_kv_heads": sw_model.num_kv_heads,
+        "head_dim": sw_model.head_dim,
+        "native_dtype": sw_model.native_dtype,
+        "weight_bytes_per_param": sw_model.weight_bytes_per_param,
+        "kv_dtype_bytes": sw_model.kv_dtype_bytes,
+        "context_len": sw_model.context_len,
+        # No sliding_window / global_layer_every_n
+    })
+    isl, osl = 32768, 512
+    kv_sw = kv_budget(gpu, sw_model, "bf16", isl, osl)
+    kv_fa = kv_budget(gpu, fa_model, "bf16", isl, osl)
+    # With ISL=32768 >> window=1024, sliding-window should allow far more sequences
+    assert kv_sw.max_concurrent_seqs > kv_fa.max_concurrent_seqs
+
+
+def test_kv_budget_sliding_window_no_benefit_within_window():
+    """When ISL+OSL ≤ sliding_window, concurrency equals the full-attention case."""
+    gpu = get_gpu("h100_sxm")
+    sw_model = get_model("gemma-3-1b")  # sliding_window=512
+    fa_model = resolve_model({
+        "name": "gemma-3-1b-fa",
+        "display_name": "Gemma 3 1B full-attn",
+        "total_params": sw_model.total_params,
+        "active_params": sw_model.active_params,
+        "num_layers": sw_model.num_layers,
+        "d_model": sw_model.d_model,
+        "num_q_heads": sw_model.num_q_heads,
+        "num_kv_heads": sw_model.num_kv_heads,
+        "head_dim": sw_model.head_dim,
+        "native_dtype": sw_model.native_dtype,
+        "weight_bytes_per_param": sw_model.weight_bytes_per_param,
+        "kv_dtype_bytes": sw_model.kv_dtype_bytes,
+    })
+    # ISL+OSL=400 is well under window=512 → no benefit; both should give same result
+    isl, osl = 300, 100
+    kv_sw = kv_budget(gpu, sw_model, "bf16", isl, osl)
+    kv_fa = kv_budget(gpu, fa_model, "bf16", isl, osl)
+    assert kv_sw.max_concurrent_seqs == kv_fa.max_concurrent_seqs
+
+
+def test_kv_budget_effective_context_tokens_stored():
+    """effective_context_tokens is stored on KvBudget and is < isl+osl at long context."""
+    gpu = get_gpu("h100_sxm")
+    model = get_model("gemma-3-4b")  # sliding_window=1024, global_layer_every_n=6
+    isl, osl = 65536, 512
+    kb = kv_budget(gpu, model, "bf16", isl, osl)
+    full_ctx = float(isl + osl)
+    assert kb.effective_context_tokens < full_ctx
+    assert kb.effective_context_tokens > 0
+
+
+def test_kv_budget_full_attention_model_effective_equals_full_ctx():
+    """For models without sliding window, effective_context_tokens == isl+osl."""
+    gpu = get_gpu("h100_sxm")
+    model = get_model("llama-3.1-8b")
+    isl, osl = 2048, 128
+    kb = kv_budget(gpu, model, "fp8", isl, osl)
+    assert kb.effective_context_tokens == float(isl + osl)
+
+
+# ============================================================================
+# Unit tests — ISL > context_len warning
+# ============================================================================
+
+
+def test_plan_warns_when_isl_exceeds_context_len():
+    """ISL exceeding the model's native context window should produce a warning."""
+    model = get_model("mistral-7b")        # context_len=32768
+    gpu = get_gpu("h100_sxm")
+    est = plan(
+        requests_per_day=10_000,
+        peak_multiplier=2.0,
+        isl=65536,                         # > 32768 native context
+        osl=256,
+        ttft_slo_ms=5000.0,
+        model=model,
+        gpu=gpu,
+        dtype="bf16",
+        tp=1,
+        traffic_class="batch",
+    )
+    combined = " ".join(est.warnings).lower()
+    assert "native context" in combined or "context window" in combined
+
+
+def test_plan_no_context_warning_within_limit():
+    """No context-length warning when ISL is within the model's native window."""
+    model = get_model("llama-3.1-8b")     # context_len=131072
+    gpu = get_gpu("l4")
+    est = plan(
+        requests_per_day=100_000,
+        peak_multiplier=2.0,
+        isl=2048,
+        osl=128,
+        ttft_slo_ms=5000.0,
+        model=model,
+        gpu=gpu,
+        dtype="fp8",
+        tp=1,
+        traffic_class="batch",
+    )
+    combined = " ".join(est.warnings).lower()
+    assert "native context" not in combined
+
+
+# ============================================================================
+# Unit tests — global_head_dim warning
+# ============================================================================
+
+
+def test_plan_warns_on_global_head_dim_difference():
+    """Gemma 4 31B has global_head_dim=512 and should produce an informational warning."""
+    model = get_model("gemma-4-31b")
+    gpu = get_gpu("h100_sxm")
+    est = plan(
+        requests_per_day=10_000,
+        peak_multiplier=2.0,
+        isl=4096,
+        osl=256,
+        ttft_slo_ms=5000.0,
+        model=model,
+        gpu=gpu,
+        dtype="bf16",
+        tp=2,
+        traffic_class="batch",
+    )
+    combined = " ".join(est.warnings).lower()
+    assert "global attention" in combined
+
+
+def test_plan_no_global_head_dim_warning_for_standard_model():
+    """Standard models without global_head_dim should not produce the global-layer warning."""
+    model = get_model("llama-3.1-8b")
+    gpu = get_gpu("l4")
+    est = plan(
+        requests_per_day=100_000,
+        peak_multiplier=2.0,
+        isl=2048,
+        osl=128,
+        ttft_slo_ms=5000.0,
+        model=model,
+        gpu=gpu,
+        dtype="fp8",
+        tp=1,
+        traffic_class="batch",
+    )
+    combined = " ".join(est.warnings).lower()
+    assert "global attention" not in combined
