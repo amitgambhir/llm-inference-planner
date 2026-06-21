@@ -200,8 +200,8 @@ export default function ScenarioBuilder() {
           )}
         </div>
 
-        {/* ── Dtype + TP ── */}
-        <div className="grid grid-cols-2 gap-4">
+        {/* ── Dtype + TP + GPU mem util ── */}
+        <div className="grid grid-cols-3 gap-4">
           <div>
             <label className="block text-sm font-medium mb-1">Serving dtype</label>
             <select
@@ -215,10 +215,22 @@ export default function ScenarioBuilder() {
           <div>
             <label className="block text-sm font-medium mb-1">Tensor parallel</label>
             <input
-              type="number" min={1} max={8}
+              type="number" min={1} max={64}
               className="w-full border rounded-lg px-3 py-2 text-sm"
               value={form.tp}
               onChange={(e) => set("tp", parseInt(e.target.value))}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              GPU mem util
+              <span className="ml-1 text-gray-400 font-normal text-xs" title="Fraction of VRAM reserved for weights + KV cache (default 0.9). Lower if you see OOM errors.">?</span>
+            </label>
+            <input
+              type="number" min={0.5} max={1.0} step={0.05}
+              className="w-full border rounded-lg px-3 py-2 text-sm"
+              value={form.gpu_mem_util}
+              onChange={(e) => set("gpu_mem_util", parseFloat(e.target.value))}
             />
           </div>
         </div>
@@ -283,6 +295,52 @@ export default function ScenarioBuilder() {
                   <option key={tc.key} value={tc.key}>{tc.label}</option>
                 ))}
               </select>
+            </div>
+          </div>
+        </fieldset>
+
+        {/* ── Advanced serving config ── */}
+        <fieldset className="border rounded-lg p-4">
+          <legend className="text-sm font-medium px-1">Advanced <span className="text-gray-400 font-normal">(optional)</span></legend>
+          <div className="grid grid-cols-3 gap-4 mt-2">
+            <div>
+              <label className="block text-sm mb-1">
+                Prefix cache len
+                <span className="ml-1 text-gray-400 text-xs" title="Shared prefix length in tokens (e.g. system prompt). Reduces prefill compute; KV budget unchanged.">?</span>
+              </label>
+              <input
+                type="number" min={0}
+                placeholder="0"
+                className="w-full border rounded-lg px-3 py-2 text-sm"
+                value={form.prefix_cache_len ?? ""}
+                onChange={(e) => set("prefix_cache_len", e.target.value === "" ? undefined : parseInt(e.target.value))}
+              />
+            </div>
+            <div>
+              <label className="block text-sm mb-1">
+                Cache hit rate
+                <span className="ml-1 text-gray-400 text-xs" title="Fraction of requests that hit the prefix cache (0.0–1.0).">?</span>
+              </label>
+              <input
+                type="number" min={0} max={1} step={0.05}
+                placeholder="0.0"
+                className="w-full border rounded-lg px-3 py-2 text-sm"
+                value={form.prefix_cache_hit_rate ?? ""}
+                onChange={(e) => set("prefix_cache_hit_rate", e.target.value === "" ? undefined : parseFloat(e.target.value))}
+              />
+            </div>
+            <div>
+              <label className="block text-sm mb-1">
+                Max batch size
+                <span className="ml-1 text-gray-400 text-xs" title="vLLM --max-num-seqs: scheduler concurrency cap, independent of KV budget.">?</span>
+              </label>
+              <input
+                type="number" min={1}
+                placeholder="unlimited"
+                className="w-full border rounded-lg px-3 py-2 text-sm"
+                value={form.max_num_seqs ?? ""}
+                onChange={(e) => set("max_num_seqs", e.target.value === "" ? undefined : parseInt(e.target.value))}
+              />
             </div>
           </div>
         </fieldset>

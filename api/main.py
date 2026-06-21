@@ -137,6 +137,9 @@ def create_app(
                 tp=scenario.tp,
                 traffic_class=scenario.traffic_class,
                 gpu_mem_util=scenario.gpu_mem_util,
+                prefix_cache_len=scenario.prefix_cache_len or 0,
+                prefix_cache_hit_rate=scenario.prefix_cache_hit_rate or 0.0,
+                max_num_seqs=scenario.max_num_seqs,
             )
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc))
@@ -218,6 +221,9 @@ def create_app(
                 tp=scenario.tp,
                 traffic_class=scenario.traffic_class,
                 gpu_mem_util=scenario.gpu_mem_util,
+                prefix_cache_len=scenario.prefix_cache_len or 0,
+                prefix_cache_hit_rate=scenario.prefix_cache_hit_rate or 0.0,
+                max_num_seqs=scenario.max_num_seqs,
             )
             bp = benchmark_plan(est, scenario.model_name, scenario.gpu_name)
         except Exception as exc:
@@ -275,6 +281,9 @@ def create_app(
                 tp=scenario.tp,
                 traffic_class=scenario.traffic_class,
                 gpu_mem_util=scenario.gpu_mem_util,
+                prefix_cache_len=scenario.prefix_cache_len or 0,
+                prefix_cache_hit_rate=scenario.prefix_cache_hit_rate or 0.0,
+                max_num_seqs=scenario.max_num_seqs,
             )
             bp = benchmark_plan(est, scenario.model_name, scenario.gpu_name)
         except Exception as exc:

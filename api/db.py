@@ -33,6 +33,9 @@ class ScenarioRow(Base):
     traffic_class = Column(String, nullable=False)
     gpu_mem_util = Column(Float, nullable=False)
     runtime = Column(String, nullable=True)
+    prefix_cache_len = Column(Integer, nullable=True)
+    prefix_cache_hit_rate = Column(Float, nullable=True)
+    max_num_seqs = Column(Integer, nullable=True)
     created_at = Column(DateTime, nullable=False)
 
 

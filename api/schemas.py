@@ -28,6 +28,9 @@ class ScenarioCreate(BaseModel):
     traffic_class: str = "realtime"
     gpu_mem_util: float = Field(0.90, gt=0, le=1.0)
     runtime: Optional[str] = "vllm"
+    prefix_cache_len: Optional[int] = Field(None, ge=0)
+    prefix_cache_hit_rate: Optional[float] = Field(None, ge=0.0, le=1.0)
+    max_num_seqs: Optional[int] = Field(None, ge=1)
 
 
 class ScenarioOut(ScenarioCreate):

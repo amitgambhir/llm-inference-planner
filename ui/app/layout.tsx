@@ -22,7 +22,7 @@ export default function RootLayout({
             <nav className="flex gap-4 text-sm text-gray-500">
               <a href="/" className="hover:text-gray-900">New Scenario</a>
               <a
-                href="https://github.com/amitgambhir/llm-inference-bench/blob/main/README.md"
+                href="https://github.com/amitgambhir/llm-inference-planner/blob/main/README.md"
                 target="_blank"
                 rel="noreferrer"
                 className="hover:text-gray-900"
