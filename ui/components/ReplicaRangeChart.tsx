@@ -45,7 +45,7 @@ export function ReplicaRangeChart({
           <XAxis dataKey="name" tick={{ fontSize: 12 }} />
           <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
           <Tooltip
-            formatter={(v: number) => [`${v} replicas`, ""]}
+            formatter={(v) => [`${v ?? ""} replicas`, ""]}
             labelStyle={{ fontWeight: 600 }}
           />
           <ReferenceLine y={replicas} stroke={color} strokeDasharray="4 2" />
