@@ -36,6 +36,13 @@ function BenchmarkPlanInner() {
 
   const [runs, setRuns] = useState<Record<number, RunState>>({});
 
+  const isLocalEndpoint = (() => {
+    try {
+      const host = new URL(endpoint).hostname;
+      return host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1";
+    } catch { return false; }
+  })();
+
   useEffect(() => {
     if (!sid) return;
     api.getBenchmarkPlan(parseInt(sid))
@@ -134,6 +141,11 @@ function BenchmarkPlanInner() {
             placeholder="http://your-gpu-host:8000/v1/completions"
             className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono bg-slate-50 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
           />
+          {isLocalEndpoint && (
+            <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              Remote run unavailable for localhost endpoints — copy the commands and run them directly on your GPU machine.
+            </p>
+          )}
           <details className="mt-1">
             <summary className="text-xs text-slate-400 cursor-pointer select-none hover:text-slate-600">
               Basic auth (optional)
@@ -188,13 +200,15 @@ function BenchmarkPlanInner() {
                       </span>
                     )}
                     <CopyButton text={step.command} />
-                    <button
-                      onClick={() => handleRun(i)}
-                      disabled={isActive || !endpoint}
-                      className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
-                    >
-                      {isActive ? "Running…" : "Run"}
-                    </button>
+                    {!isLocalEndpoint && (
+                      <button
+                        onClick={() => handleRun(i)}
+                        disabled={isActive || !endpoint}
+                        className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+                      >
+                        {isActive ? "Running…" : "Run"}
+                      </button>
+                    )}
                   </div>
                 </div>
                 <div className="px-4 py-3">
