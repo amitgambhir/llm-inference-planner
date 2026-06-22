@@ -269,10 +269,11 @@ FastAPI with SQLite persistence (Postgres-ready). Uses `create_app()` factory fo
 
 ### 3.6 `ui/` four-screen web interface
 
-Next.js 14 (App Router) + Tailwind CSS + Recharts.
+Next.js 16 (App Router) + Tailwind CSS + Recharts. v1.0.0 redesign: dark slate header, indigo accent, flow breadcrumb, section cards, dark code blocks.
 
 | Component | Purpose |
 | --- | --- |
+| `FlowBreadcrumb` | Step progress strip — `① Scenario → ② Estimate → ③ Benchmark Plan → ④ Report`; active/done/pending states driven by `usePathname()` |
 | `ReplicaRangeChart` | Confidence-colored bar chart (low/recommended/high) |
 | `ConfidenceBadge` | Tier + band percentage, color-coded green/yellow/red |
 | `ModeBadge` | Validation status — yellow (`estimate_only`), blue (`partially_validated`), green (`validated_by_benchmark`) |
@@ -366,7 +367,7 @@ llm-inference-planner/
 │   ├── jobs.py                     # Background benchmark subprocess runner
 │   └── main.py                     # create_app() factory + 9 endpoints
 │
-├── ui/                             # Next.js 14 App Router + Tailwind + Recharts
+├── ui/                             # Next.js 16 App Router + Tailwind + Recharts
 │   ├── app/
 │   │   ├── page.tsx                # Screen 1: Scenario Builder (HF import, advanced config)
 │   │   ├── api/hf-config/route.ts  # Next.js API route — HuggingFace geometry proxy
@@ -374,6 +375,7 @@ llm-inference-planner/
 │   │   ├── benchmark-plan/page.tsx # Screen 3: Ordered test matrix
 │   │   └── report/page.tsx         # Screen 4: Recommendation + Markdown export
 │   └── components/
+│       ├── FlowBreadcrumb.tsx      # Step progress strip (① Scenario → … → ④ Report)
 │       ├── ConfidenceBadge.tsx
 │       ├── ModeBadge.tsx
 │       ├── ReplicaRangeChart.tsx
