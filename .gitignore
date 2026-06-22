@@ -49,6 +49,7 @@ CLAUDE.md
 
 # Superpowers design and implementation docs
 docs/superpowers/
+.superpowers/
 
 # Benchmarking Data from Real world scenarios
 docs/benchmarkings/

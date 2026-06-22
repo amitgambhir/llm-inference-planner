@@ -15,7 +15,7 @@ type RunState = {
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  queued:  "bg-gray-100 text-gray-600",
+  queued:  "bg-slate-100 text-slate-600",
   running: "bg-blue-100 text-blue-700",
   done:    "bg-green-100 text-green-700",
   failed:  "bg-red-100 text-red-700",
@@ -30,12 +30,10 @@ function BenchmarkPlanInner() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // endpoint URL + optional basic auth
   const [endpoint, setEndpoint] = useState("http://localhost:8000/v1/completions");
   const [authUser, setAuthUser] = useState("");
   const [authPass, setAuthPass] = useState("");
 
-  // per-step run state: index → RunState
   const [runs, setRuns] = useState<Record<number, RunState>>({});
 
   useEffect(() => {
@@ -46,7 +44,6 @@ function BenchmarkPlanInner() {
       .finally(() => setLoading(false));
   }, [sid]);
 
-  // Poll any in-flight runs every 3 s until done/failed
   useEffect(() => {
     const inFlight = Object.entries(runs).filter(
       ([, r]) => r.runId !== null && (r.status === "queued" || r.status === "running")
@@ -75,7 +72,6 @@ function BenchmarkPlanInner() {
     if (!sid) return;
     setRuns((prev) => ({ ...prev, [stepIndex]: { runId: null, status: "queued", error: null } }));
 
-    // Embed basic auth credentials into the URL if provided
     let effectiveEndpoint = endpoint;
     if (authUser || authPass) {
       try {
@@ -98,123 +94,134 @@ function BenchmarkPlanInner() {
   };
 
   if (!sid) return <p className="text-red-500">Missing scenario ID.</p>;
-  if (loading) return <p className="text-gray-500">Generating benchmark plan…</p>;
+  if (loading) return <p className="text-slate-500">Generating benchmark plan…</p>;
   if (error) return <p className="text-red-600 bg-red-50 p-3 rounded">{error}</p>;
   if (!plan) return null;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-2xl font-bold">Benchmark Plan</h1>
+        <h1 className="text-2xl font-bold text-slate-900">Benchmark Plan</h1>
         <ModeBadge mode="estimate_only" />
       </div>
 
-      <div className="flex gap-3 flex-wrap">
+      <div className="flex gap-2 flex-wrap">
         <ConfidenceBadge level={plan.confidence} />
-        <span className="inline-flex items-center px-3 py-1 rounded-full text-sm bg-gray-100 text-gray-700 border">
+        <span className="inline-flex items-center px-3 py-1 rounded-md text-xs bg-slate-100 text-slate-600 border border-slate-200 font-mono">
           {plan.binding_constraint}
         </span>
       </div>
 
       {/* Rationale */}
-      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800">
-        <strong>Why this ordering:</strong> {plan.rationale}
+      <div className="bg-white border border-indigo-100 border-l-4 border-l-brand-500 rounded-r-xl px-4 py-3 text-sm text-indigo-800">
+        <strong className="font-semibold">Why this ordering: </strong>{plan.rationale}
       </div>
 
       {/* Endpoint input */}
-      <div className="bg-white border rounded-xl p-4 space-y-2">
-        <label className="block text-sm font-medium text-gray-700">
-          Inference endpoint URL
-        </label>
-        <p className="text-xs text-gray-500">
-          The OpenAI-compatible <code>/v1/completions</code> URL of the running GPU server you want to benchmark.
-        </p>
-        <input
-          type="url"
-          value={endpoint}
-          onChange={(e) => setEndpoint(e.target.value)}
-          placeholder="http://your-gpu-host:8000/v1/completions"
-          className="w-full border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
-        />
-        <details className="mt-1">
-          <summary className="text-xs text-gray-400 cursor-pointer select-none hover:text-gray-600">
-            Basic auth (optional)
-          </summary>
-          <div className="mt-2 flex gap-2">
-            <input
-              type="text"
-              value={authUser}
-              onChange={(e) => setAuthUser(e.target.value)}
-              placeholder="Username"
-              autoComplete="username"
-              className="flex-1 border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-            />
-            <input
-              type="password"
-              value={authPass}
-              onChange={(e) => setAuthPass(e.target.value)}
-              placeholder="Password"
-              autoComplete="current-password"
-              className="flex-1 border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-            />
-          </div>
-          <p className="text-xs text-gray-400 mt-1">
-            Credentials are embedded in the URL sent to the backend — never stored.
+      <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-2.5 bg-slate-50 border-b border-slate-100">
+          <span className="text-xs font-bold text-slate-500 uppercase tracking-wide">Inference endpoint</span>
+        </div>
+        <div className="px-4 py-3 space-y-2">
+          <p className="text-xs text-slate-500">
+            The OpenAI-compatible <code className="bg-slate-100 px-1 rounded">/v1/completions</code> URL of the running GPU server.
           </p>
-        </details>
+          <input
+            type="url"
+            value={endpoint}
+            onChange={(e) => setEndpoint(e.target.value)}
+            placeholder="http://your-gpu-host:8000/v1/completions"
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono bg-slate-50 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
+          />
+          <details className="mt-1">
+            <summary className="text-xs text-slate-400 cursor-pointer select-none hover:text-slate-600">
+              Basic auth (optional)
+            </summary>
+            <div className="mt-2 flex gap-2">
+              <input
+                type="text"
+                value={authUser}
+                onChange={(e) => setAuthUser(e.target.value)}
+                placeholder="Username"
+                autoComplete="username"
+                className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-slate-50 focus:outline-none focus:ring-2 focus:ring-brand-500"
+              />
+              <input
+                type="password"
+                value={authPass}
+                onChange={(e) => setAuthPass(e.target.value)}
+                placeholder="Password"
+                autoComplete="current-password"
+                className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-slate-50 focus:outline-none focus:ring-2 focus:ring-brand-500"
+              />
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              Credentials are embedded in the URL sent to the backend — never stored.
+            </p>
+          </details>
+        </div>
       </div>
 
       {/* Steps */}
-      <div className="space-y-3">
-        {plan.steps.map((step, i) => {
-          const run = runs[i];
-          const isActive = run?.status === "queued" || run?.status === "running";
-          return (
-            <div key={i} className="bg-white border rounded-xl p-4">
-              <div className="flex items-start justify-between gap-3 mb-2">
-                <div>
-                  <span className="text-xs text-gray-400 font-mono mr-2">#{step.priority}</span>
-                  <span className="font-medium text-sm">{step.label}</span>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {run?.status && (
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_COLORS[run.status]}`}>
-                      {run.status}
+      <div>
+        <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">
+          Steps ({plan.steps.length})
+        </h2>
+        <div className="space-y-3">
+          {plan.steps.map((step, i) => {
+            const run = runs[i];
+            const isActive = run?.status === "queued" || run?.status === "running";
+            return (
+              <div key={i} className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+                <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-100">
+                  <div className="flex items-center gap-2.5">
+                    <span className="w-6 h-6 rounded-full bg-brand-50 border border-brand-200 text-brand-600 text-xs font-bold flex items-center justify-center flex-shrink-0">
+                      {step.priority}
                     </span>
+                    <span className="font-semibold text-sm text-slate-800">{step.label}</span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {run?.status && (
+                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${STATUS_COLORS[run.status]}`}>
+                        {run.status}
+                      </span>
+                    )}
+                    <CopyButton text={step.command} />
+                    <button
+                      onClick={() => handleRun(i)}
+                      disabled={isActive || !endpoint}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+                    >
+                      {isActive ? "Running…" : "Run"}
+                    </button>
+                  </div>
+                </div>
+                <div className="px-4 py-3">
+                  <p className="text-xs text-slate-500 mb-2">{step.purpose}</p>
+                  <pre className="text-xs bg-slate-900 text-slate-300 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">
+                    {step.command}
+                  </pre>
+                  {run?.error && (
+                    <p className="text-xs text-red-600 mt-2">{run.error}</p>
                   )}
-                  <CopyButton text={step.command} />
-                  <button
-                    onClick={() => handleRun(i)}
-                    disabled={isActive || !endpoint}
-                    className="text-xs px-3 py-1 rounded-lg bg-brand-600 hover:bg-brand-700 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {isActive ? "Running…" : "Run"}
-                  </button>
+                  <p className="text-xs text-slate-400 mt-2">
+                    Collapses: <em>{step.collapses_confidence_on}</em>
+                  </p>
                 </div>
               </div>
-              <p className="text-xs text-gray-500 mb-2">{step.purpose}</p>
-              <pre className="text-xs bg-gray-50 border rounded p-3 overflow-x-auto text-gray-700 whitespace-pre-wrap break-all">
-                {step.command}
-              </pre>
-              {run?.error && (
-                <p className="text-xs text-red-600 mt-2">{run.error}</p>
-              )}
-              <p className="text-xs text-gray-400 mt-2">
-                Collapses: <em>{step.collapses_confidence_on}</em>
-              </p>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
 
       {/* All commands block */}
-      <div className="bg-white border rounded-xl p-4">
-        <div className="flex justify-between items-center mb-2">
-          <h2 className="text-sm font-medium">All commands</h2>
+      <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="flex justify-between items-center px-4 py-2.5 bg-slate-50 border-b border-slate-100">
+          <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wide">All commands</h2>
           <CopyButton text={plan.steps.map((s) => s.command).join("\n")} />
         </div>
-        <pre className="text-xs bg-gray-50 p-3 rounded overflow-x-auto text-gray-600 whitespace-pre-wrap break-all">
+        <pre className="text-xs bg-slate-900 text-slate-300 p-4 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">
           {plan.steps.map((s) => s.command).join("\n")}
         </pre>
       </div>
@@ -223,13 +230,13 @@ function BenchmarkPlanInner() {
       <div className="flex gap-3">
         <button
           onClick={() => router.push(`/estimate?sid=${sid}`)}
-          className="px-4 py-2 border rounded-lg text-sm text-gray-600 hover:bg-gray-50"
+          className="px-4 py-2 border border-slate-200 rounded-lg text-sm text-slate-500 hover:bg-slate-50 transition-colors"
         >
           ← Estimate
         </button>
         <button
           onClick={() => router.push(`/report?sid=${sid}`)}
-          className="flex-1 bg-brand-600 hover:bg-brand-700 text-white py-2 rounded-lg text-sm font-medium transition-colors"
+          className="flex-1 bg-brand-600 hover:bg-brand-700 text-white py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm shadow-brand-200"
         >
           View Recommendation →
         </button>
@@ -240,7 +247,7 @@ function BenchmarkPlanInner() {
 
 export default function BenchmarkPlanPage() {
   return (
-    <Suspense fallback={<p className="text-gray-400">Loading…</p>}>
+    <Suspense fallback={<p className="text-slate-400">Loading…</p>}>
       <BenchmarkPlanInner />
     </Suspense>
   );

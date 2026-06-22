@@ -51,6 +51,9 @@ export const api = {
   getBenchmarkRun: (runId: number) =>
     get<BenchmarkRunOut>(`/benchmarks/${runId}`),
 
+  getScenario: (scenarioId: number) =>
+    get<ScenarioOut>(`/scenarios/${scenarioId}`),
+
   getRecommendation: (scenarioId: number) =>
     get<RecommendationOut>(`/scenarios/${scenarioId}/recommendation`),
 };
