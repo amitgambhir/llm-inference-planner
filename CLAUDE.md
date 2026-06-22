@@ -70,6 +70,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | `api/jobs.py` | Background benchmark subprocess runner |
 | `api/main.py` | `create_app()` factory + 9 REST endpoints; `create_scenario` saves all optional serving config fields |
 | `ui/app/api/hf-config/route.ts` | Next.js API route — HuggingFace geometry proxy; fetches `config.json` + safetensors index; returns typed `HFModelSpec`; handles gated models via `x-hf-token` header |
+| `ui/components/FlowBreadcrumb.tsx` | Step progress strip rendered below the header on all pages; reads `usePathname()` to mark active/done/pending steps; steps: `① Scenario → ② Estimate → ③ Benchmark Plan → ④ Report` |
 
 ### Benchmark + analysis pipeline
 

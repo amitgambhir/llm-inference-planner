@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { api } from "@/lib/api";
-import type { EstimateOut, ScenarioOut } from "@/lib/types";
+import type { EstimateOut } from "@/lib/types";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { ModeBadge } from "@/components/ModeBadge";
 import { ReplicaRangeChart } from "@/components/ReplicaRangeChart";
@@ -15,15 +15,13 @@ function EstimateResultsInner() {
   const sid = params.get("sid");
 
   const [estimate, setEstimate] = useState<EstimateOut | null>(null);
-  const [scenario, setScenario] = useState<ScenarioOut | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!sid) return;
-    const id = parseInt(sid);
-    Promise.all([api.runEstimate(id), api.getScenario(id)])
-      .then(([est, sc]) => { setEstimate(est); setScenario(sc); })
+    api.runEstimate(parseInt(sid))
+      .then(setEstimate)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, [sid]);
@@ -41,11 +39,6 @@ function EstimateResultsInner() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Estimate Results</h1>
-          {scenario && (
-            <p className="text-sm text-slate-500 mt-0.5">
-              {[scenario.name, scenario.gpu_name, scenario.model_name, scenario.dtype].join(" · ")}
-            </p>
-          )}
         </div>
         <ModeBadge mode="estimate_only" />
       </div>
