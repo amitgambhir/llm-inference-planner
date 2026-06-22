@@ -53,6 +53,9 @@ docs/superpowers/
 # Benchmarking Data from Real world scenarios
 docs/benchmarkings/
 
+# Research and decision notes (local reference only)
+docs/cost-model-research.md
+
 
 # Phase B calibration scratch (raw RunPod output — filled in manually, then replaced by YAML)
 catalog/vllm_calibration_scratch.txt
