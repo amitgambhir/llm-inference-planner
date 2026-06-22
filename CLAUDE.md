@@ -18,7 +18,7 @@ A globally installed pytest plugin tries to bind a socket in this environment. B
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
-345 tests across 14 files:
+353 tests across 14 files:
 
 | File | Count | What it covers |
 | --- | --- | --- |
@@ -43,10 +43,9 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 
 | File | Role |
 | --- | --- |
-| `catalog/gpus.yaml` | Peak FLOPS, memory bandwidth, VRAM, arch, memory_type, MFU defaults for each GPU SKU |
-| `catalog/models.yaml` | Parameter count, hidden dim, layers, KV heads; includes llama-3.3-70b and llama-4-maverick |
+| `catalog/gpus.yaml` | Peak FLOPS, memory bandwidth, VRAM, arch, memory_type, MFU defaults for each GPU SKU; 15 GPUs: NVIDIA (H100/H200/A100/L40S/L4/H20/B100/B200/B300/B30A) + AMD (MI250X/MI300X/MI325X/MI350X/MI300A) |
+| `catalog/models.yaml` | Parameter count, hidden dim, layers, KV heads; 24 entries including Llama 3.1/3.3/4, Gemma 2/3/4, Mistral, Mixtral, Qwen3, Nemotron-4, GLM-5, gpt-oss-20b; optional: `sliding_window`, `global_layer_every_n`, `global_head_dim`, `num_global_kv_heads` (Gemma 4); `hf_id` for HuggingFace model path |
 | `catalog/costs.yaml` | On-demand + 1-yr reserved cost per GPU-hour |
-| `catalog/models.yaml` | Parameter count, hidden dim, layers, KV heads; 30+ entries including Gemma 2/3/4, Mistral, Mixtral, Nemotron-4, GLM-5; optional fields: `sliding_window`, `global_layer_every_n` (interleaved local/global attention), `global_head_dim`, `num_global_kv_heads` (Gemma 4 global layers) |
 | `catalog/anchors.yaml` | Measured throughput anchors; written by `ingest_anchor.py`; `concurrency: float` (sub-1 valid for multi-replica ÷ N); optional: `prefix_cache_hit_rate`, `effective_isl` (prefix-caching runs), `max_num_seqs` |
 | `catalog/benchmarks_public.yaml` | Public benchmark points (schema v2) — vLLM `level`, TRT-LLM `shape`, distribution `validate`, `sanity` points; Phase B stubs (measured: null) pre-staged |
 | `catalog/runtimes.yaml` | Supported inference engines with display names and engine confound notes |
@@ -55,7 +54,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | `catalog/phase_c_refit.py` | Phase C automation — pins `engine_factor`, narrows `PARAM_BOUNDS`, runs full refit, prints CV + sensitivity + suggested test targets |
 | `planner/intake.py` | Multi-mode demand resolver — `DemandSpec`, `WorkloadError`, `resolve_demand()`; three input modes (requests_per_day / avg_rps / users×prompts); `users` passes through to cost layer |
 | `planner/capacity.py` | Roofline model — prefill (compute-bound) + decode (bandwidth-bound); `plan()` accepts `users`, `prefix_cache_len`, `prefix_cache_hit_rate`, `max_num_seqs`; `CapacityEstimate` carries `users`, `gpu_mem_gb`, `headroom_factor`; CLI: `--avg-rps`, `--users`, `--prompts-per-user-per-day`, `--prefix-cache-len`, `--prefix-cache-hit-rate`, `--max-num-seqs`, `--explain` |
-| `planner/catalog.py` | GPU/model catalog loader — reads `catalog/gpus.yaml` + `catalog/models.yaml` |
+| `planner/catalog.py` | GPU/model catalog loader — reads `catalog/gpus.yaml` + `catalog/models.yaml`; `resolve_model()` accepts catalog name, inline spec dict, or JSON-encoded spec string (from UI HF import) |
 | `planner/cost.py` | Cost envelope from catalog pricing; `CostVariant` carries `cost_per_user_per_month` (populated when `estimate.users` is set) |
 | `planner/benchmark_plan.py` | Ordered test matrix: ISL sweep, concurrency sweep, precision compare, KV check |
 | `planner/confidence.py` | THREE-tier rubric: HIGH (±10%), MEDIUM (±20%), DEFAULT (±25%); `HIGH_CONCURRENCY_RATIO=10.0` ratio gate; `plan()` passes `eff_batch` (not KV ceiling) as scenario concurrency |
@@ -66,10 +65,11 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 | `planner/ingest_anchor.py` | Reads benchmark JSON, writes calibration anchor to `catalog/anchors.yaml` |
 | `planner/compare.py` | Multi-config comparison: cheapest, safest, best_latency |
 | `planner/report.py` | Markdown report with mode badge; `include_napkin_math: bool = False` appends "## How we got here" section |
-| `api/db.py` | SQLAlchemy 2.0 ORM: ScenarioRow, CapacityEstimateRow, BenchmarkRunRow, RecommendationRow, ReportRow |
-| `api/schemas.py` | Pydantic v2 request/response schemas |
+| `api/db.py` | SQLAlchemy 2.0 ORM: ScenarioRow (includes `prefix_cache_len`, `prefix_cache_hit_rate`, `max_num_seqs`), CapacityEstimateRow, BenchmarkRunRow, RecommendationRow, ReportRow |
+| `api/schemas.py` | Pydantic v2 request/response schemas; `ScenarioCreate` includes `gpu_mem_util`, `prefix_cache_len`, `prefix_cache_hit_rate`, `max_num_seqs` |
 | `api/jobs.py` | Background benchmark subprocess runner |
-| `api/main.py` | `create_app()` factory + 9 REST endpoints |
+| `api/main.py` | `create_app()` factory + 9 REST endpoints; `create_scenario` saves all optional serving config fields |
+| `ui/app/api/hf-config/route.ts` | Next.js API route — HuggingFace geometry proxy; fetches `config.json` + safetensors index; returns typed `HFModelSpec`; handles gated models via `x-hf-token` header |
 
 ### Benchmark + analysis pipeline
 
@@ -214,6 +214,16 @@ Each quality sidecar (`results/quality/<tag>.json`) carries a `latency_tag` back
 **`plan()` warns when `global_head_dim` differs from local `head_dim`.** When `model.global_head_dim` is set, a warning reports how much larger or smaller the global-layer KV is vs the local-layer estimate. For Gemma 4 31B the global layers (every 6th) use `head_dim=512` with 4 KV heads — net 50% smaller than the local estimate — so the overall KV budget is conservatively overestimated. The warning is informational, not a hard error.
 
 **GLM-5.1 and GLM-5.2 use `geometry_source: estimated`.** Their Dynamic Sparse Attention (DSA) architecture uses non-standard `head_dim` values that do not follow `hidden_size / num_q_heads`. Until runtime-measured KV sizes are confirmed, confidence auto-downgrades one level and the geometry warning fires.
+
+**`resolve_model()` accepts JSON-encoded spec strings.** When `model_name` starts with `{`, `resolve_model` tries `json.loads()` and re-dispatches to the dict path. This enables the UI's HF import flow: the frontend stores the fetched spec as `JSON.stringify(spec)` in `ScenarioCreate.model_name`; the backend deserializes it transparently. Catalog names are unaffected.
+
+**HuggingFace model import uses `metadata.total_size` for weight memory.** The `/api/hf-config` Next.js route fetches `model.safetensors.index.json` and reads `metadata.total_size` (total bytes across all shards) → `resident_weights_gb`. This is more accurate than multiplying `total_params × bytes_per_param` for GQA or MoE models (which have non-uniform dtypes). If the index is unavailable, the route falls back to the HF API's dtype-bucketed param counts. Do **not** use a param-count multiplication from `config.json` — it is broken for GQA (under-counts KV heads) and MoE (over-counts inactive experts).
+
+**HF token flows via request header, not query string.** The Next.js route reads `x-hf-token` from the request headers (set by the UI via `fetch` options). This keeps the token out of server logs and browser history. The token is only forwarded to HuggingFace and is never stored anywhere.
+
+**UI TP max is 64.** The Scenario Builder tensor-parallel field was raised from 8 to 64. Models like GLM-5.1/5.2 require TP≥21 on a single H100 node (21× because their MoE design and parameter count exceed single-GPU VRAM at bf16).
+
+**`create_scenario` in `api/main.py` now saves `prefix_cache_len`, `prefix_cache_hit_rate`, `max_num_seqs`.** Earlier versions accepted these fields in the schema but silently dropped them when writing to `ScenarioRow`. Fixed: all three optional serving config columns are now explicitly passed to the ORM constructor.
 
 ## Deployment (Vercel + Render)
 

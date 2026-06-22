@@ -202,10 +202,24 @@ Open [http://localhost:3000](http://localhost:3000). Four screens:
 
 | Screen | Route | Purpose |
 | --- | --- | --- |
-| Scenario Builder | `/` | Workload + GPU/model/dtype selection; supports catalog models and custom model spec |
+| Scenario Builder | `/` | Workload + GPU/model/dtype selection; catalog or HuggingFace model import; advanced serving config |
 | Estimate | `/estimate` | Replica range chart, confidence badge, binding constraint, warnings |
 | Benchmark Plan | `/benchmark-plan` | Ordered test matrix with copy-ready `run_bench.py` commands |
 | Report | `/report` | Recommendation summary, validation status badge, Markdown export |
+
+**Scenario Builder fields** — all wired through to the roofline estimator:
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| GPU | H100 SXM | 15 GPUs: NVIDIA (H100/H200/A100/L40S/L4/H20/B100/B200/B300/B30A) + AMD (MI250X/MI300X/MI325X/MI350X/MI300A) |
+| Model | llama-3.1-8b | 24 catalog models + **HuggingFace import** (enter `owner/model-name` → fetches geometry from HF Hub) |
+| Tensor parallel | 1 | Up to 64 — required for large models (e.g. GLM needs TP≥21) |
+| GPU mem util | 0.9 | Fraction of VRAM reserved for weights + KV cache; lower if you see OOM |
+| Prefix cache len | — | Shared prefix tokens (e.g. system prompt); reduces effective ISL, KV budget unchanged |
+| Cache hit rate | — | Fraction of requests that hit the prefix cache (0.0–1.0) |
+| Max batch size | — | vLLM `--max-num-seqs` scheduler cap, independent of KV budget |
+
+**HuggingFace model import**: switch to *Custom* mode in the Scenario Builder, enter a HuggingFace model ID (`owner/model-name`), and click Fetch. The planner retrieves `config.json` and the safetensors index to extract full geometry (layers, hidden size, KV heads, head_dim, context length, dtype, MoE topology, weight memory). A HF token field is available for gated models. Confidence is automatically capped at MEDIUM for HF-imported models (`geometry_source: estimated`).
 
 ### 3.3 `planner/` modules
 
@@ -262,6 +276,9 @@ Next.js 14 (App Router) + Tailwind CSS + Recharts.
 | `ReplicaRangeChart` | Confidence-colored bar chart (low/recommended/high) |
 | `ConfidenceBadge` | Tier + band percentage, color-coded green/yellow/red |
 | `ModeBadge` | Validation status — yellow (`estimate_only`), blue (`partially_validated`), green (`validated_by_benchmark`) |
+| `CustomModelFields` | HuggingFace model ID lookup — fetches geometry from HF Hub via `/api/hf-config` Next.js route |
+
+**`ui/app/api/hf-config/`** — Next.js API route that proxies HuggingFace. Fetches `config.json` for geometry and `model.safetensors.index.json` for weight memory (`metadata.total_size`). Falls back to the HF API dtype-bucketed param counts. Returns a typed `HFModelSpec` dict which `resolve_model()` accepts directly as an inline spec.
 
 ---
 
@@ -351,7 +368,8 @@ llm-inference-planner/
 │
 ├── ui/                             # Next.js 14 App Router + Tailwind + Recharts
 │   ├── app/
-│   │   ├── page.tsx                # Screen 1: Scenario Builder
+│   │   ├── page.tsx                # Screen 1: Scenario Builder (HF import, advanced config)
+│   │   ├── api/hf-config/route.ts  # Next.js API route — HuggingFace geometry proxy
 │   │   ├── estimate/page.tsx       # Screen 2: Replica range chart + confidence
 │   │   ├── benchmark-plan/page.tsx # Screen 3: Ordered test matrix
 │   │   └── report/page.tsx         # Screen 4: Recommendation + Markdown export
@@ -426,7 +444,7 @@ llm-inference-planner/
 
 1. **Physics before empiricism.** New efficiency curve constants need a citable source (public benchmark, vendor perf overview, or a `fit_role: level` point in `catalog/benchmarks_public.yaml`). Ad-hoc constants get rejected.
 2. **Engine separation.** Never mix TRT-LLM throughput numbers into vLLM estimates. Use the `engine_factor` mechanism in `efficiency_constants.yaml`.
-3. **Tests first.** Run `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q` before committing. 345 tests, all must pass.
+3. **Tests first.** Run `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q` before committing. 353 tests, all must pass.
 
 ---
 
