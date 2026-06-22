@@ -50,6 +50,11 @@ export interface EstimateOut {
     kv_ratio: number;
     warnings: string[];
     assumptions: string[];
+    cost_on_demand_month_usd: number | null;
+    cost_reserved_month_usd: number | null;
+    cost_per_1m_tokens_usd: number | null;
+    cost_per_request_usd: number | null;
+    cost_gpu_hours_day: number | null;
   };
   created_at: string;
 }

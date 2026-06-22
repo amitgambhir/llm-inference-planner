@@ -125,6 +125,42 @@ function EstimateResultsInner() {
         </dl>
       </div>
 
+      {/* Cost estimate */}
+      {p.cost_on_demand_month_usd != null && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-100">
+            <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wide">Cost estimate</h2>
+          </div>
+          <div className="grid grid-cols-2 divide-x divide-slate-100">
+            <div className="px-4 py-4">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">On-demand</p>
+              <p className="text-2xl font-extrabold text-slate-900 tabular-nums">
+                ${p.cost_on_demand_month_usd.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                <span className="text-sm font-normal text-slate-400 ml-1">/mo</span>
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                ${p.cost_per_1m_tokens_usd?.toFixed(4)} / 1M tokens
+              </p>
+            </div>
+            <div className="px-4 py-4">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">1-yr reserved</p>
+              <p className="text-2xl font-extrabold text-brand-600 tabular-nums">
+                ${p.cost_reserved_month_usd!.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                <span className="text-sm font-normal text-slate-400 ml-1">/mo</span>
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                ${p.cost_per_request_usd?.toFixed(6)} / request
+              </p>
+            </div>
+          </div>
+          <div className="px-4 py-2 border-t border-slate-100 bg-slate-50">
+            <p className="text-xs text-slate-400">
+              {p.cost_gpu_hours_day?.toFixed(0)} GPU-hours/day · catalog pricing, verify against your contract
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Warnings */}
       {p.warnings?.length > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">

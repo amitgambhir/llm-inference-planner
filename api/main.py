@@ -147,6 +147,13 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
+        from planner.cost import compute_cost, CostEstimate
+        cost_est: CostEstimate | None = None
+        try:
+            cost_est = compute_cost(est, scenario.gpu_name, tp=scenario.tp)
+        except Exception:
+            pass  # cost catalog may not have this GPU — degrade gracefully
+
         payload = {
             "avg_rps": est.traffic.avg_rps,
             "peak_rps": est.traffic.peak_rps,
@@ -165,6 +172,12 @@ def create_app(
             "kv_ratio": est.kv_ratio,
             "warnings": est.warnings,
             "assumptions": est.assumptions,
+            # cost fields — None when GPU has no catalog cost entry
+            "cost_on_demand_month_usd": cost_est.on_demand.cost_month_usd if cost_est else None,
+            "cost_reserved_month_usd": cost_est.reserved.cost_month_usd if cost_est else None,
+            "cost_per_1m_tokens_usd": cost_est.on_demand.cost_per_1m_tokens_usd if cost_est else None,
+            "cost_per_request_usd": cost_est.on_demand.cost_per_request_usd if cost_est else None,
+            "cost_gpu_hours_day": cost_est.on_demand.gpu_hours_day if cost_est else None,
         }
 
         row = CapacityEstimateRow(
