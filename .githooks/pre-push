@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Pre-push hook — warns if commits being pushed changed core code but not docs.
+#
+# Install once:
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+# Read the remote/url/local-ref/remote-ref from stdin (git push protocol)
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+    # Skip deletes
+    [[ "$local_sha" == "0000000000000000000000000000000000000000" ]] && continue
+
+    # Range of commits being pushed
+    if [[ "$remote_sha" == "0000000000000000000000000000000000000000" ]]; then
+        range="$local_sha"
+    else
+        range="$remote_sha..$local_sha"
+    fi
+
+    # Files changed in the commits being pushed
+    changed=$(git diff --name-only "$range" 2>/dev/null || true)
+
+    # Check for significant code changes
+    significant=$(echo "$changed" | grep -E "^(planner/|api/|ui/app/|catalog/|collect/|analyze/|evaluate/)" || true)
+
+    if [[ -n "$significant" ]]; then
+        # Check if docs were updated in the same range
+        docs_changed=$(echo "$changed" | grep -E "^(README\.md|CLAUDE\.md)$" || true)
+
+        if [[ -z "$docs_changed" ]]; then
+            echo ""
+            echo "⚠️  [pre-push] These commits change core code without updating docs:"
+            echo "$significant" | sed 's/^/   /'
+            echo ""
+            echo "   Consider updating README.md and CLAUDE.md if the changes"
+            echo "   introduce new features, parameters, or architectural details."
+            echo "   Run:  python3 scripts/update_docs_metrics.py"
+            echo "   (This is a warning — push proceeds.)"
+            echo ""
+        fi
+    fi
+done
+
+exit 0

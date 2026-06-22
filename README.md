@@ -446,6 +446,21 @@ llm-inference-planner/
 2. **Engine separation.** Never mix TRT-LLM throughput numbers into vLLM estimates. Use the `engine_factor` mechanism in `efficiency_constants.yaml`.
 3. **Tests first.** Run `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q` before committing. 353 tests, all must pass.
 
+### Git hooks (one-time setup)
+
+```bash
+bash scripts/setup_hooks.sh
+```
+
+This sets `core.hooksPath = .githooks` and activates two hooks:
+
+| Hook | What it does |
+| --- | --- |
+| `pre-commit` | Runs `scripts/update_docs_metrics.py` to auto-update test count, GPU count, and model count in README and CLAUDE.md; re-stages docs if changed; warns if core code changed but docs were not staged |
+| `pre-push` | Warns if the commits being pushed change `planner/`, `api/`, `ui/app/`, or `catalog/` without a corresponding README or CLAUDE.md update |
+
+Both hooks are warnings only — they never block a commit or push. `scripts/update_docs_metrics.py` can also be run manually at any time.
+
 ---
 
 ## 9. License

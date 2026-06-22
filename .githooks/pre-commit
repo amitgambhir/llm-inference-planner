@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Pre-commit hook — auto-updates doc metrics and warns about stale docs.
+#
+# Install once:
+#   git config core.hooksPath .githooks
+# Or run scripts/setup_hooks.sh
+
+set -euo pipefail
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+# ── 1. Auto-update mechanical metrics in README.md and CLAUDE.md ──────────────
+
+python3 scripts/update_docs_metrics.py
+
+# Re-stage docs if they were modified by the script
+for doc in README.md CLAUDE.md; do
+    if ! git diff --quiet "$doc" 2>/dev/null; then
+        git add "$doc"
+        echo "[pre-commit] Re-staged $doc after metrics update."
+    fi
+done
+
+# ── 2. Warn if significant code changed but docs were not staged ──────────────
+
+# Files that signal "docs may need updating" when changed
+SIGNIFICANT_PATTERNS=(
+    "planner/"
+    "api/"
+    "ui/app/"
+    "catalog/"
+    "collect/"
+    "analyze/"
+    "evaluate/"
+)
+
+# Check if any significant files are staged
+staged_significant=0
+for pattern in "${SIGNIFICANT_PATTERNS[@]}"; do
+    if git diff --cached --name-only | grep -q "^${pattern}"; then
+        staged_significant=1
+        break
+    fi
+done
+
+# Check if docs are staged (by user or by the metrics update above)
+docs_staged=0
+if git diff --cached --name-only | grep -qE "^(README\.md|CLAUDE\.md)$"; then
+    docs_staged=1
+fi
+
+if [[ $staged_significant -eq 1 && $docs_staged -eq 0 ]]; then
+    echo ""
+    echo "⚠️  [pre-commit] Code changes detected in core directories."
+    echo "   README.md and CLAUDE.md were NOT updated in this commit."
+    echo "   If the changes introduce new features, gotchas, or API changes,"
+    echo "   consider updating the docs before pushing."
+    echo "   (This is a warning — commit proceeds.)"
+    echo ""
+fi
+
+exit 0
